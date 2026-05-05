@@ -28,9 +28,15 @@ import {
   Upload,
   History,
   ArrowLeft,
-  Building2
+  Building2,
+  Github,
+  GitPullRequest,
+  GitBranch,
+  Gitlab,
+  Download
 } from "lucide-react";
 import { MemoryPalace } from "./components/MemoryPalace";
+import { CloneRepoModal } from "./components/CloneRepoModal";
 import { motion, AnimatePresence } from "motion/react";
 import Editor from "@monaco-editor/react";
 import ReactMarkdown from "react-markdown";
@@ -48,7 +54,8 @@ import {
   KnowledgeDocument,
   AgentAction,
   RefactoringProposal,
-  TimelineEvent
+  TimelineEvent,
+  TerminalTab
 } from "@/src/types";
 import { 
   chatStream, 
@@ -66,7 +73,12 @@ export default function App() {
   const [fileContent, setFileContent] = useState<string>("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [terminalOutput, setTerminalOutput] = useState<string[]>(["Welcome to Nexus AI Editor Terminal.", "Ready..."]);
+  const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([
+    { id: "term-1", title: "zsh", output: ["Welcome to Nexus AI Editor Terminal.", "Ready..."], history: [], cwd: "/" }
+  ]);
+  const [activeTerminalTabId, setActiveTerminalTabId] = useState("term-1");
+  const [terminalSearchOpen, setTerminalSearchOpen] = useState(false);
+  const [terminalSearchQuery, setTerminalSearchQuery] = useState("");
   const [userInput, setUserInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [chatMode, setChatMode] = useState<"general" | "sql">("general");
@@ -93,6 +105,7 @@ export default function App() {
   const [isEvolving, setIsEvolving] = useState(false);
   const [evolutionStatus, setEvolutionStatus] = useState<"idle" | "analyzing" | "improving">("idle");
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
+  const [isCloneModalOpen, setIsCloneModalOpen] = useState(false);
 
   const addTimelineEvent = (type: TimelineEvent["type"], description: string, metadata: TimelineEvent["metadata"] = {}) => {
     const newEvent: TimelineEvent = {
@@ -126,9 +139,9 @@ export default function App() {
         console.error('Speech recognition error:', event.error);
         setIsRecording(false);
         if (event.error === 'not-allowed') {
-          setTerminalOutput(prev => [...prev, "⚠ Microphone access denied. Please click the lock icon in your browser's address bar to allow microphone access for this site."]);
+          updateActiveTerminalOutput("⚠ Microphone access denied. Please click the lock icon in your browser's address bar to allow microphone access for this site.");
         } else {
-          setTerminalOutput(prev => [...prev, `⚠ Speech recognition error: ${event.error}`]);
+          updateActiveTerminalOutput(`⚠ Speech recognition error: ${event.error}`);
         }
       };
 
@@ -221,12 +234,12 @@ export default function App() {
 
   const handleAgentTrigger = async (agentType: "review" | "test" | "profile" | "refactor") => {
     if (!activeFile) {
-       setTerminalOutput(prev => [...prev, "⚠ Please open a file first."]);
+       updateActiveTerminalOutput("⚠ Please open a file first.");
        return;
     }
 
     setIsTyping(true);
-    setTerminalOutput(prev => [...prev, `AI Agent: Starting ${agentType} for ${activeFile}...`]);
+    updateActiveTerminalOutput(`AI Agent: Starting ${agentType} for ${activeFile}...`);
     
     try {
        const result = await transformSQL(fileContent, agentType); 
@@ -267,9 +280,9 @@ export default function App() {
       else if (agentType === "profile") setActivePanelTab("profiler");
       else if (agentType === "refactor") setActiveView("agents");
       
-      setTerminalOutput(prev => [...prev, `✓ ${agentType} completed. See results in the panel.`]);
+      updateActiveTerminalOutput(`✓ ${agentType} completed. See results in the panel.`);
     } catch (err) {
-      setTerminalOutput(prev => [...prev, "Error: " + (err as Error).message]);
+      updateActiveTerminalOutput("Error: " + (err as Error).message);
     } finally {
       setIsTyping(false);
     }
@@ -278,7 +291,7 @@ export default function App() {
   const applyProposal = async (proposal: RefactoringProposal) => {
     try {
       setEvolutionStatus("improving");
-      setTerminalOutput(prev => [...prev, `Nexus Prime: Applying evolution to ${proposal.filePath}...`]);
+      updateActiveTerminalOutput(`Nexus Prime: Applying evolution to ${proposal.filePath}...`);
       
       const res = await fetch("/api/write-file", {
         method: "POST",
@@ -290,9 +303,9 @@ export default function App() {
 
       setProposals(prev => prev.map(p => p.id === proposal.id ? { ...p, status: "applied" } : p));
       setFileContent(proposal.diff);
-      setTerminalOutput(prev => [...prev, `✓ ${proposal.filePath} evolved successfully.`]);
+      updateActiveTerminalOutput(`✓ ${proposal.filePath} evolved successfully.`);
     } catch (err) {
-      setTerminalOutput(prev => [...prev, `Error applying evolution: ${(err as Error).message}`]);
+      updateActiveTerminalOutput(`Error applying evolution: ${(err as Error).message}`);
     } finally {
       setEvolutionStatus("idle");
     }
@@ -301,7 +314,7 @@ export default function App() {
   const restoreSnapshot = (event: TimelineEvent) => {
     if (event.type === "file_change" || (event.type === "ai_action" && event.metadata.path)) {
        if (event.metadata.path && event.metadata.content !== undefined) {
-          setTerminalOutput(prev => [...prev, `Time-Travel: Restoring snapshot of ${event.metadata.path}...`]);
+          updateActiveTerminalOutput(`Time-Travel: Restoring snapshot of ${event.metadata.path}...`);
           // For simplicity, just update active file content if it's the right one
           // In a complex app, we'd find if it's open, or open it first.
           setActiveFile(event.metadata.path);
@@ -336,7 +349,7 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filePath: activeFile, content: fileContent })
       });
-      setTerminalOutput(prev => [...prev, `Saved ${activeFile}`]);
+      updateActiveTerminalOutput(`Saved ${activeFile}`);
       addTimelineEvent("file_change", `Saved ${activeFile}`, { path: activeFile, content: fileContent });
     } catch (err) {
       console.error("Failed to save file", err);
@@ -355,7 +368,7 @@ export default function App() {
     
     if (["explain", "convert", "document"].includes(type)) {
       if (!selectedCode) {
-        setTerminalOutput(prev => [...prev, "⚠ Please select some code in the editor first."]);
+        updateActiveTerminalOutput("⚠ Please select some code in the editor first.");
         return;
       }
       
@@ -365,7 +378,7 @@ export default function App() {
         if (type === "document") {
           setPlsqlDocs(result);
           setActivePanelTab("plsql_docs");
-          setTerminalOutput(prev => [...prev, "✓ Documentation generated in PL/SQL tab."]);
+          updateActiveTerminalOutput("✓ Documentation generated in PL/SQL tab.");
         } else if (type === "convert") {
            setChatMessages(prev => [...prev, 
             { role: "user", content: `Convert this code to T-SQL: \n\n\`\`\`sql\n${selectedCode}\n\`\`\`` },
@@ -384,7 +397,7 @@ export default function App() {
           ]);
         }
       } catch (err) {
-        setTerminalOutput(prev => [...prev, "Error: " + (err as Error).message]);
+        updateActiveTerminalOutput("Error: " + (err as Error).message);
       } finally {
         setIsTyping(false);
       }
@@ -414,7 +427,7 @@ export default function App() {
         }] }
       ]);
     } catch (err) {
-      setTerminalOutput(prev => [...prev, "Error: " + (err as Error).message]);
+      updateActiveTerminalOutput("Error: " + (err as Error).message);
     } finally {
       setIsTyping(false);
     }
@@ -436,7 +449,7 @@ export default function App() {
         }] }
       ]);
     } catch (err) {
-      setTerminalOutput(prev => [...prev, "Error: " + (err as Error).message]);
+      updateActiveTerminalOutput("Error: " + (err as Error).message);
     } finally {
       setIsTyping(false);
     }
@@ -598,7 +611,7 @@ export default function App() {
       } catch (err) {
         const errorMsg = (err as Error).message;
         if (retryCount < 2) {
-          setTerminalOutput(prev => [...prev, `Action failed: ${errorMsg}. Retrying... (${retryCount+1}/2)`]);
+          updateActiveTerminalOutput(`Action failed: ${errorMsg}. Retrying... (${retryCount+1}/2)`);
           await new Promise(r => setTimeout(r, 1000));
           return attemptExecution(retryCount + 1);
         }
@@ -621,8 +634,30 @@ export default function App() {
     await attemptExecution();
   };
 
+  const currentTerminalTab = terminalTabs.find(t => t.id === activeTerminalTabId) || terminalTabs[0];
+
+  const updateActiveTerminalOutput = (newLine: string | string[]) => {
+    setTerminalTabs(prev => prev.map(tab => {
+      if (tab.id === activeTerminalTabId) {
+        const lines = Array.isArray(newLine) ? newLine : [newLine];
+        return { ...tab, output: [...tab.output, ...lines] };
+      }
+      return tab;
+    }));
+  };
+
   const runCommand = async (cmd: string) => {
-    setTerminalOutput(prev => [...prev, `> ${cmd}`]);
+    updateActiveTerminalOutput(`➜ ${cmd}`);
+    
+    // Add to history
+    setTerminalTabs(prev => prev.map(tab => {
+      if (tab.id === activeTerminalTabId) {
+        const newHistory = [cmd, ...tab.history.filter(h => h !== cmd)].slice(0, 50);
+        return { ...tab, history: newHistory };
+      }
+      return tab;
+    }));
+
     try {
       const res = await fetch("/api/terminal", {
         method: "POST",
@@ -630,11 +665,34 @@ export default function App() {
         body: JSON.stringify({ command: cmd })
       });
       const data = await res.json();
-      if (data.stdout) setTerminalOutput(prev => [...prev, data.stdout]);
-      if (data.stderr) setTerminalOutput(prev => [...prev, `Error: ${data.stderr}`]);
+      if (data.stdout) updateActiveTerminalOutput(data.stdout);
+      if (data.stderr) updateActiveTerminalOutput(`Error: ${data.stderr}`);
       addTimelineEvent("command", `Executed: ${cmd}`, { command: cmd, result: data.stdout || data.stderr });
     } catch (err) {
-      setTerminalOutput(prev => [...prev, `Failed: ${err}`]);
+      updateActiveTerminalOutput(`Failed: ${err}`);
+    }
+  };
+
+  const addTerminalTab = () => {
+    const newId = `term-${Date.now()}`;
+    const newTab: TerminalTab = {
+      id: newId,
+      title: "zsh",
+      output: [`Terminal session ${terminalTabs.length + 1} started.`],
+      history: [],
+      cwd: "/"
+    };
+    setTerminalTabs(prev => [...prev, newTab]);
+    setActiveTerminalTabId(newId);
+  };
+
+  const closeTerminalTab = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (terminalTabs.length === 1) return;
+    const newTabs = terminalTabs.filter(t => t.id !== id);
+    setTerminalTabs(newTabs);
+    if (activeTerminalTabId === id) {
+      setActiveTerminalTabId(newTabs[newTabs.length - 1].id);
     }
   };
 
@@ -667,6 +725,7 @@ export default function App() {
           <SidebarIcon icon={BrainCog} active={activeView === "agents"} onClick={() => setActiveView("agents")} />
           <SidebarIcon icon={Users} active={activeView === "collaboration"} onClick={() => setActiveView("collaboration")} />
           <SidebarIcon icon={Library} active={activeView === "knowledge"} onClick={() => setActiveView("knowledge")} />
+          <SidebarIcon icon={Github} active={activeView === "git"} onClick={() => setActiveView("git")} />
           <SidebarIcon icon={History} active={activeView === "timeline"} onClick={() => setActiveView("timeline")} />
           <SidebarIcon icon={Building2} active={activeView === "palace"} onClick={() => setActiveView("palace")} />
           <SidebarIcon icon={Database} active={activeView === "mcp"} onClick={() => setActiveView("mcp")} />
@@ -898,6 +957,53 @@ export default function App() {
                      }} />
                    </div>
                 )}
+                {activeView === "git" && (
+                  <div className="flex flex-col h-full bg-[#1e1e1e]">
+                    <div className="p-3 border-b border-white/5 bg-white/[0.02]">
+                      <h3 className="text-[11px] font-bold uppercase tracking-widest text-[#858585]">Source Control</h3>
+                    </div>
+                    <div className="p-4 space-y-6">
+                      <div className="space-y-3">
+                        <p className="text-[11px] text-gray-400 leading-relaxed uppercase font-bold tracking-tight">Cloning & Imports</p>
+                        <button 
+                          onClick={() => setIsCloneModalOpen(true)}
+                          className="w-full py-2.5 bg-vscode-blue hover:bg-vscode-blue/80 text-white rounded-lg text-[11px] font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-vscode-blue/10 font-sans"
+                        >
+                          <Download size={14} />
+                          CLONE REPOSITORY
+                        </button>
+                        <div className="grid grid-cols-2 gap-2">
+                           <button onClick={() => setIsCloneModalOpen(true)} className="py-2 bg-white/5 hover:bg-white/10 text-white rounded text-[10px] font-bold transition-all flex items-center justify-center gap-2 font-sans uppercase">
+                             <Github size={12} />
+                             GITHUB
+                           </button>
+                           <button onClick={() => setIsCloneModalOpen(true)} className="py-2 bg-white/5 hover:bg-white/10 text-white rounded text-[10px] font-bold transition-all flex items-center justify-center gap-2 font-sans uppercase">
+                             <Gitlab size={12} />
+                             GITLAB
+                           </button>
+                        </div>
+                      </div>
+
+                      <div className="space-y-3">
+                         <p className="text-[11px] text-gray-400 leading-relaxed uppercase font-bold tracking-tight">Active Repository</p>
+                         <div className="p-3 bg-black/20 rounded border border-white/5">
+                            <div className="flex items-center gap-2 mb-2">
+                               <GitBranch size={12} className="text-vscode-blue" />
+                               <span className="text-xs font-medium text-white uppercase tracking-tighter">main</span>
+                               <span className="ml-auto text-[10px] text-gray-500 font-mono">dirty</span>
+                            </div>
+                            <div className="text-[10px] text-[#858585] flex items-center gap-2 italic">
+                               <AlertCircle size={10} />
+                               4 files pending sync
+                            </div>
+                         </div>
+                         <button className="w-full py-2 bg-white/5 hover:bg-white/10 text-[#cccccc] hover:text-white rounded text-[10px] font-bold transition-all border border-white/5 font-sans uppercase tracking-widest">
+                            SYNC CHANGES
+                         </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
                 {activeView === "mcp" && (
                   <div className="flex flex-col h-full">
                     <div className="p-3 border-b border-border-main flex items-center justify-between">
@@ -1006,7 +1112,7 @@ export default function App() {
             </div>
 
             {/* Terminal / Panel Split */}
-            <div className="h-[200px] border-t border-border-main bg-editor-bg flex flex-col shadow-inner">
+            <div className="h-[280px] border-t border-border-main bg-editor-bg flex flex-col shadow-inner relative">
               <div className="flex items-center gap-5 px-4 h-[35px] bg-panel-bg text-[11px] font-bold tracking-wider text-[#858585] border-b border-editor-bg select-none">
                   <PanelTabItem label="TERMINAL" active={activePanelTab === "terminal"} onClick={() => setActivePanelTab("terminal")} />
                   <PanelTabItem label="DEBUG CONSOLE" active={activePanelTab === "debug"} onClick={() => setActivePanelTab("debug")} />
@@ -1015,22 +1121,110 @@ export default function App() {
                   <PanelTabItem label="CODE REVIEW" active={activePanelTab === "review_results"} onClick={() => setActivePanelTab("review_results")} color="text-orange-400" />
                   <PanelTabItem label="TEST GEN" active={activePanelTab === "test_gen"} onClick={() => setActivePanelTab("test_gen")} color="text-green-400" />
                   <PanelTabItem label="PROFILER" active={activePanelTab === "profiler"} onClick={() => setActivePanelTab("profiler")} color="text-purple-400" />
-                 <div className="ml-auto flex items-center gap-2 text-[9px] opacity-60">
-                   <TerminalIcon size={12} />
-                   <span className="font-mono">zsh: node</span>
-                 </div>
+                  
+                  <div className="ml-auto flex items-center gap-3">
+                    <button onClick={() => setTerminalSearchOpen(!terminalSearchOpen)} className="hover:text-white transition-colors">
+                      <Search size={14} />
+                    </button>
+                    <div className="w-[1px] h-3 bg-white/10" />
+                    <div className="flex items-center gap-2 text-[9px] opacity-60">
+                      <TerminalIcon size={12} />
+                      <span className="font-mono">zsh: node</span>
+                    </div>
+                  </div>
               </div>
-              <div className="flex-1 p-3 font-mono text-[12px] overflow-y-auto custom-scrollbar bg-[#1e1e1e]">
+
+              {/* Terminal Tabs Bar */}
+              {activePanelTab === "terminal" && (
+                <div className="flex items-center bg-[#181818] border-b border-white/5 h-[30px] px-2 gap-1 overflow-x-auto custom-scrollbar">
+                  {terminalTabs.map(tab => (
+                    <div 
+                      key={tab.id}
+                      onClick={() => setActiveTerminalTabId(tab.id)}
+                      className={cn(
+                        "flex items-center gap-2 px-3 h-[24px] rounded-t text-[10px] cursor-pointer transition-all border-t-2",
+                        activeTerminalTabId === tab.id 
+                          ? "bg-[#1e1e1e] text-white border-vscode-blue" 
+                          : "text-[#858585] hover:bg-white/5 border-transparent"
+                      )}
+                    >
+                      <Terminal size={10} />
+                      <span className="truncate max-w-[80px]">{tab.title}</span>
+                      {terminalTabs.length > 1 && (
+                        <button 
+                          onClick={(e) => closeTerminalTab(tab.id, e)}
+                          className="p-0.5 hover:bg-white/10 rounded-full"
+                        >
+                          <X size={8} />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  <button 
+                    onClick={addTerminalTab}
+                    className="p-1 hover:bg-white/5 text-[#858585] hover:text-white rounded ml-1 transition-colors"
+                  >
+                    <Plus size={14} />
+                  </button>
+                </div>
+              )}
+
+              <div className="flex-1 p-3 font-mono text-[12px] overflow-y-auto custom-scrollbar bg-[#1e1e1e] relative">
+                 {/* History Search Overlay */}
+                 <AnimatePresence>
+                   {terminalSearchOpen && (
+                     <motion.div 
+                       initial={{ opacity: 0, y: -10 }}
+                       animate={{ opacity: 1, y: 0 }}
+                       exit={{ opacity: 0, y: -10 }}
+                       className="absolute top-0 right-4 z-50 w-64 bg-[#252526] border border-border-main shadow-xl rounded-b p-2"
+                     >
+                       <div className="flex items-center gap-2 bg-[#3c3c3c] rounded px-2 py-1 mb-2">
+                         <Search size={12} className="text-gray-400" />
+                         <input 
+                           autoFocus
+                           className="bg-transparent border-none outline-none text-[11px] text-white w-full"
+                           placeholder="Search history..."
+                           value={terminalSearchQuery}
+                           onChange={(e) => setTerminalSearchQuery(e.target.value)}
+                         />
+                         <button onClick={() => setTerminalSearchOpen(false)}><X size={12} /></button>
+                       </div>
+                       <div className="max-h-32 overflow-y-auto custom-scrollbar text-[#cccccc]">
+                         {currentTerminalTab.history
+                           .filter(h => h.toLowerCase().includes(terminalSearchQuery.toLowerCase()))
+                           .map((h, i) => (
+                             <div 
+                               key={i} 
+                               className="px-2 py-1 hover:bg-vscode-blue/20 cursor-pointer text-[10px] truncate"
+                               onClick={() => {
+                                 runCommand(h);
+                                 setTerminalSearchOpen(false);
+                               }}
+                             >
+                               {h}
+                             </div>
+                           ))
+                         }
+                         {terminalSearchQuery && currentTerminalTab.history.filter(h => h.toLowerCase().includes(terminalSearchQuery.toLowerCase())).length === 0 && (
+                           <div className="text-[10px] text-gray-500 text-center py-2 italic font-sans">No results found</div>
+                         )}
+                       </div>
+                     </motion.div>
+                   )}
+                 </AnimatePresence>
+
                  {activePanelTab === "terminal" && (
-                   <>
-                     {terminalOutput.map((line, i) => (
-                       <div key={i} className="mb-0.5 leading-relaxed">{line}</div>
+                   <div className="space-y-0.5">
+                     {currentTerminalTab.output.map((line, i) => (
+                       <TerminalLine key={i} content={line} />
                      ))}
-                     <div className="flex items-center gap-2 mt-2">
+                     <div className="flex items-center gap-2 mt-2 group/term">
                         <span className="text-agent-teal">➜</span>
+                        <span className="text-vscode-blue/60 text-[10px] select-none font-bold">~</span>
                         <input 
                           type="text" 
-                          className="flex-1 bg-transparent border-none outline-none text-[#cccccc]" 
+                          className="flex-1 bg-transparent border-none outline-none text-[#cccccc] caret-agent-teal" 
                           placeholder="Type a command..."
                           onKeyDown={(e) => {
                             if (e.key === 'Enter') {
@@ -1040,7 +1234,7 @@ export default function App() {
                           }}
                         />
                      </div>
-                   </>
+                   </div>
                  )}
                  {activePanelTab === "plsql_docs" && (
                    <div className="text-[#cccccc] text-xs leading-relaxed max-w-3xl prose prose-invert prose-sm">
@@ -1354,6 +1548,15 @@ export default function App() {
             </motion.div>
           </div>
         )}
+        <CloneRepoModal 
+          isOpen={isCloneModalOpen} 
+          onClose={() => setIsCloneModalOpen(false)} 
+          onCloneSuccess={(path) => {
+            updateActiveTerminalOutput(`✓ Successfully cloned into ${path}`);
+            fetchFileTree();
+            addTimelineEvent("command", `Cloned repository into ${path}`);
+          }} 
+        />
       </AnimatePresence>
     </div>
   );
@@ -1404,16 +1607,44 @@ function SidebarIcon({ icon: Icon, active, onClick, className }: { icon: any, ac
 
 function PanelTabItem({ label, active, onClick, color }: { label: string, active: boolean, onClick: () => void, color?: string }) {
   return (
-    <span 
+    <div 
       onClick={onClick}
       className={cn(
-        "h-full flex items-center px-2 cursor-pointer transition-colors border-b-2",
-        active ? (color ? `border-current ${color} text-white` : "border-white text-white") : "border-transparent hover:text-white",
-        color && !active && `hover:${color}`
+        "h-full flex items-center px-2 cursor-pointer transition-all border-b-2 uppercase",
+        active ? (color ? `border-current ${color} text-white` : "border-vscode-blue text-white") : "border-transparent text-[#858585] hover:text-[#cccccc]"
       )}
     >
       {label}
-    </span>
+    </div>
+  );
+}
+
+function TerminalLine({ content }: { content: string }) {
+  const isCommand = content.startsWith("➜");
+  const isError = content.startsWith("Error:") || content.startsWith("Failed:") || content.startsWith("⚠");
+  const isSuccess = content.startsWith("✓");
+
+  // Simple shell syntax highlighting
+  const highlightLine = (text: string) => {
+    if (isCommand) {
+      const parts = text.split(" ");
+      return (
+        <span>
+          <span className="text-agent-teal">➜ </span>
+          <span className="text-vscode-blue font-bold">{parts[1]}</span>
+          <span className="text-[#cccccc]"> {parts.slice(2).join(" ")}</span>
+        </span>
+      );
+    }
+    return <span className={cn(
+      isError ? "text-red-400" : isSuccess ? "text-green-400" : "text-[#cccccc]"
+    )}>{text}</span>;
+  };
+
+  return (
+    <div className="mb-0.5 leading-relaxed whitespace-pre-wrap break-all">
+      {highlightLine(content)}
+    </div>
   );
 }
 

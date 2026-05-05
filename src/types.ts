@@ -45,7 +45,7 @@ export interface TimelineEvent {
   };
 }
 
-export type ViewType = "files" | "search" | "chat" | "mcp" | "agents" | "collaboration" | "knowledge" | "timeline" | "palace" | "settings";
+export type ViewType = "files" | "search" | "chat" | "mcp" | "agents" | "collaboration" | "knowledge" | "timeline" | "palace" | "settings" | "git";
 
 export interface CollaborationSession {
   id: string;
@@ -80,6 +80,14 @@ export interface DBConnection {
 }
 
 export type PanelTab = "terminal" | "debug" | "output" | "plsql_docs" | "review_results" | "test_gen" | "profiler";
+
+export interface TerminalTab {
+  id: string;
+  title: string;
+  output: string[];
+  history: string[];
+  cwd: string;
+}
 
 export interface TriggerConfig {
   table: string;

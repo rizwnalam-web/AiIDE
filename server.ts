@@ -88,6 +88,39 @@ async function startServer() {
     }
   });
 
+  app.post("/api/git/clone", async (req, res) => {
+    const { cloneUrl, targetPath } = req.body;
+    try {
+      // Validate path
+      const absolutePath = path.resolve(process.cwd(), targetPath);
+      if (!absolutePath.startsWith(process.cwd())) {
+        return res.status(403).json({ error: "Access denied: Target path must be within project root" });
+      }
+
+      // Check if directory exists and is empty
+      try {
+        const stats = await fs.stat(absolutePath);
+        if (stats.isDirectory()) {
+          const files = await fs.readdir(absolutePath);
+          if (files.length > 0) {
+            return res.status(400).json({ error: "Target directory is not empty" });
+          }
+        }
+      } catch (e: any) {
+        if (e.code === 'ENOENT') {
+          await fs.mkdir(absolutePath, { recursive: true });
+        } else {
+          throw e;
+        }
+      }
+
+      const { stdout, stderr } = await execPromise(`git clone ${cloneUrl} .`, { cwd: absolutePath });
+      res.json({ success: true, message: "Repository cloned successfully", stdout, stderr });
+    } catch (error) {
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
   // MCP Simulation API
   app.get("/api/mcp/tools", async (req, res) => {
     // Mocking an MCP server providing database tools
