@@ -1,0 +1,8 @@
+{
+  "name": "Nexus AI Editor",
+  "description": "A high-performance AI-powered code editor with streaming chat, agentic file system access, and smart autocomplete.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": []
+}

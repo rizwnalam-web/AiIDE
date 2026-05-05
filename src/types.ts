@@ -1,0 +1,89 @@
+export interface FileNode {
+  name: string;
+  type: "file" | "directory";
+  path: string;
+  children?: FileNode[];
+}
+
+export interface AgentAction {
+  id: string;
+  type: "read_file" | "write_file" | "create_file" | "run_command" | "list_files" | "think" | "query_database" | "list_tables" | "insert_code" | "analyze_code" | "review_pr" | "search_code";
+  description: string;
+  path?: string;
+  content?: string;
+  command?: string;
+  reasoning?: string;
+  status: "pending" | "running" | "completed" | "failed";
+  result?: string;
+}
+
+export interface AgentTask {
+  id: string;
+  instruction: string;
+  status: "pending" | "running" | "completed" | "failed";
+  steps: AgentAction[];
+  createdAt: Date;
+}
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  task?: AgentTask;
+  actions?: AgentAction[];
+}
+
+export interface TimelineEvent {
+  id: string;
+  timestamp: Date;
+  type: "file_change" | "command" | "ai_action" | "session_start";
+  description: string;
+  metadata: {
+    path?: string;
+    content?: string;
+    command?: string;
+    result?: string;
+  };
+}
+
+export type ViewType = "files" | "search" | "chat" | "mcp" | "agents" | "collaboration" | "knowledge" | "timeline" | "palace" | "settings";
+
+export interface CollaborationSession {
+  id: string;
+  host: string;
+  activeUsers: { name: string; color: string; status: "online" | "away" }[];
+  isRecording: boolean;
+}
+
+export interface KnowledgeDocument {
+  id: string;
+  name: string;
+  type: "pdf" | "md" | "txt";
+  size: string;
+  uploadedAt: string;
+}
+
+export interface RefactoringProposal {
+  id: string;
+  title: string;
+  description: string;
+  impact: "low" | "medium" | "high";
+  filePath: string;
+  diff: string;
+  status: "pending" | "applied" | "rejected";
+}
+
+export interface DBConnection {
+  id: string;
+  name: string;
+  type: "postgresql" | "mysql";
+  status: "connected" | "disconnected";
+}
+
+export type PanelTab = "terminal" | "debug" | "output" | "plsql_docs" | "review_results" | "test_gen" | "profiler";
+
+export interface TriggerConfig {
+  table: string;
+  timing: "BEFORE" | "AFTER" | "INSTEAD OF";
+  event: "INSERT" | "UPDATE" | "DELETE";
+  action: string;
+}
