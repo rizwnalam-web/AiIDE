@@ -3,21 +3,127 @@ import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs/promises";
-import { exec } from "child_process";
+import { exec, spawn, ChildProcess } from "child_process";
 import { promisify } from "util";
+import os from "os";
 
 const execPromise = promisify(exec);
-const __filename = fileURLToPath(import.meta.url);
+// In the esbuild CJS bundle, import.meta.url is undefined — fall back to process.argv[1]
+const __filename = ((): string => {
+  try { return fileURLToPath(import.meta.url); } catch { return process.argv[1] ?? ''; }
+})();
 const __dirname = path.dirname(__filename);
 
+/** Config file path for persisting projectRoot and other state across server restarts. */
+const CONFIG_DIR = path.join(os.homedir(), '.nexus-ai-editor');
+const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
+
+/** Load persisted state from disk. */
+async function loadConfig(): Promise<{ projectRoot?: string }> {
+  try {
+    const data = await fs.readFile(CONFIG_FILE, 'utf-8');
+    return JSON.parse(data);
+  } catch {
+    return {};
+  }
+}
+
+/** Save state to disk. */
+async function saveConfig(config: { projectRoot?: string }): Promise<void> {
+  try {
+    await fs.mkdir(CONFIG_DIR, { recursive: true });
+    await fs.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('[config] Failed to save:', (err as Error).message);
+  }
+}
+
+/** Mutable project root — set via /api/set-root after user picks a folder or clones a repo.
+ *  Persisted to disk so it survives server restarts. */
+let projectRoot = "";
+
+// ── Terminal session registry ────────────────────────────────────────────────
+interface TerminalSession {
+  process: ChildProcess;
+  command: string;
+  startTime: Date;
+  cwd: string;
+  /** Buffered lines so late SSE subscribers get the full history. */
+  buffer: Array<{ type: 'out' | 'err' | 'exit'; text: string }>;
+  done: boolean;
+  clients: Set<import('express').Response>;
+}
+const terminalSessions = new Map<string, TerminalSession>();
+
+function sessionPush(id: string, type: 'out' | 'err' | 'exit', text: string) {
+  const s = terminalSessions.get(id);
+  if (!s) return;
+  s.buffer.push({ type, text });
+  if (type === 'exit') s.done = true;
+  const payload = `data: ${JSON.stringify({ type, text })}\n\n`;
+  s.clients.forEach(res => { try { res.write(payload); } catch {} });
+  if (type === 'exit') {
+    s.clients.forEach(res => { try { res.end(); } catch {} });
+    // Keep session record for 60 s so clients can read exit status
+    setTimeout(() => terminalSessions.delete(id), 60_000);
+  }
+}
+
 async function startServer() {
+  // Load persisted projectRoot from previous session
+  const config = await loadConfig();
+  if (config.projectRoot) {
+    try {
+      const stats = await fs.stat(config.projectRoot);
+      if (stats.isDirectory()) {
+        projectRoot = config.projectRoot;
+        console.log(`[config] Restored projectRoot: ${projectRoot}`);
+      }
+    } catch {
+      // Directory no longer exists or is inaccessible
+      console.warn(`[config] Saved projectRoot no longer accessible: ${config.projectRoot}`);
+      await saveConfig({}); // Clear the bad config
+    }
+  }
+
   const app = express();
-  const PORT = 3000;
+  const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
   app.use(express.json());
 
+  // Log every request so we can confirm routes are being hit
+  app.use((req, _res, next) => {
+    console.log(`[${req.method}] ${req.url}`);
+    next();
+  });
+
+  // ── Root management ──────────────────────────────────────────────────────
+  app.get("/api/get-root", (_req, res) => {
+    res.json({ root: projectRoot });
+  });
+
+  app.post("/api/set-root", async (req, res) => {
+    try {
+      const { folderPath } = (req.body as { folderPath?: unknown }) || {};
+      if (!folderPath || typeof folderPath !== "string") {
+        return res.status(400).json({ error: "folderPath is required" });
+      }
+      const stats = await fs.stat(folderPath);
+      if (!stats.isDirectory()) {
+        return res.status(400).json({ error: "Path is not a directory" });
+      }
+      projectRoot = path.resolve(folderPath);
+      // Persist the new projectRoot to disk
+      await saveConfig({ projectRoot });
+      return res.json({ success: true, root: projectRoot });
+    } catch (error) {
+      return res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
   // API Routes
   app.get("/api/files", async (req, res) => {
+    if (!projectRoot) return res.json([]);
     try {
       const walk = async (dir: string): Promise<any[]> => {
         const files = await fs.readdir(dir);
@@ -30,20 +136,20 @@ async function startServer() {
             result.push({
               name: file,
               type: "directory",
-              path: path.relative(process.cwd(), filePath),
+              path: path.relative(projectRoot, filePath),
               children: await walk(filePath),
             });
           } else {
             result.push({
               name: file,
               type: "file",
-              path: path.relative(process.cwd(), filePath),
+              path: path.relative(projectRoot, filePath),
             });
           }
         }
         return result;
       };
-      const fileTree = await walk(process.cwd());
+      const fileTree = await walk(projectRoot);
       res.json(fileTree);
     } catch (error) {
       res.status(500).json({ error: (error as Error).message });
@@ -51,10 +157,11 @@ async function startServer() {
   });
 
   app.post("/api/read-file", async (req, res) => {
+    if (!projectRoot) return res.status(400).json({ error: "No project folder open" });
     const { filePath } = req.body;
     try {
-      const absolutePath = path.resolve(process.cwd(), filePath);
-      if (!absolutePath.startsWith(process.cwd())) {
+      const absolutePath = path.resolve(projectRoot, filePath);
+      if (!absolutePath.startsWith(projectRoot)) {
         return res.status(403).json({ error: "Access denied" });
       }
       const content = await fs.readFile(absolutePath, "utf-8");
@@ -67,8 +174,8 @@ async function startServer() {
   app.post("/api/write-file", async (req, res) => {
     const { filePath, content } = req.body;
     try {
-      const absolutePath = path.resolve(process.cwd(), filePath);
-      if (!absolutePath.startsWith(process.cwd())) {
+      const absolutePath = path.resolve(projectRoot, filePath);
+      if (!absolutePath.startsWith(projectRoot)) {
         return res.status(403).json({ error: "Access denied" });
       }
       await fs.writeFile(absolutePath, content, "utf-8");
@@ -78,19 +185,183 @@ async function startServer() {
     }
   });
 
-  app.post("/api/terminal", async (req, res) => {
-    const { command } = req.body;
+  // Spawn a command and return a sessionId for SSE streaming
+  app.post("/api/terminal", (req, res) => {
+    if (!projectRoot) return res.status(400).json({ error: "No project folder open" });
+    const { command, cwd: reqCwd } = (req.body as { command?: unknown; cwd?: unknown }) || {};
+    if (!command || typeof command !== "string") {
+      return res.status(400).json({ error: "command is required" });
+    }
+    let execCwd = projectRoot;
+    if (reqCwd && typeof reqCwd === "string") {
+      const resolved = path.resolve(projectRoot, reqCwd);
+      if (resolved.startsWith(projectRoot)) execCwd = resolved;
+    }
+    const sessionId = `sess-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const isWin = process.platform === 'win32';
+    const proc = spawn(isWin ? 'cmd' : 'sh', isWin ? ['/c', command] : ['-c', command], {
+      cwd: execCwd,
+      env: process.env,
+      windowsHide: true,
+    });
+    const session: TerminalSession = {
+      process: proc, command, startTime: new Date(), cwd: execCwd,
+      buffer: [], done: false, clients: new Set(),
+    };
+    terminalSessions.set(sessionId, session);
+    proc.stdout?.on('data', (d: Buffer) => sessionPush(sessionId, 'out', d.toString()));
+    proc.stderr?.on('data', (d: Buffer) => sessionPush(sessionId, 'err', d.toString()));
+    proc.on('close', (code) => sessionPush(sessionId, 'exit', String(code ?? 0)));
+    proc.on('error', (err) => sessionPush(sessionId, 'err', err.message));
+    res.json({ sessionId, cwd: execCwd });
+  });
+
+  // SSE stream — replays buffer then streams live output
+  app.get("/api/terminal/stream/:sessionId", (req, res) => {
+    const session = terminalSessions.get(req.params.sessionId);
+    if (!session) {
+      res.status(404).json({ error: 'Session not found' });
+      return;
+    }
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+    // Replay buffered output
+    for (const item of session.buffer) {
+      res.write(`data: ${JSON.stringify(item)}\n\n`);
+    }
+    if (session.done) { res.end(); return; }
+    session.clients.add(res);
+    req.on('close', () => session.clients.delete(res));
+  });
+
+  // Kill a running session (Ctrl+C equivalent)
+  app.post("/api/terminal/kill/:sessionId", (req, res) => {
+    const session = terminalSessions.get(req.params.sessionId);
+    if (!session) return res.status(404).json({ error: 'Session not found' });
     try {
-      const { stdout, stderr } = await execPromise(command, { cwd: process.cwd() });
-      res.json({ stdout, stderr });
-    } catch (error) {
-      res.status(500).json({ error: (error as Error).message });
+      if (process.platform === 'win32') {
+        // On Windows, kill the process tree
+        spawn('taskkill', ['/pid', String(session.process.pid), '/f', '/t']);
+      } else {
+        session.process.kill('SIGINT');
+      }
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // List active sessions
+  app.get("/api/terminal/sessions", (_req, res) => {
+    const list = Array.from(terminalSessions.entries())
+      .filter(([, s]) => !s.done)
+      .map(([id, s]) => ({
+        sessionId: id,
+        command: s.command,
+        startTime: s.startTime,
+        cwd: s.cwd,
+      }));
+    res.json(list);
+  });
+
+  // System-level listening ports (shows externally-started processes like Vite)
+  // Developer process names to include — everything else is filtered out
+  const DEV_PROCESS_NAMES = new Set([
+    "node", "node.exe",
+    "npm", "npm.cmd", "npx", "npx.cmd",
+    "bun", "bun.exe",
+    "deno", "deno.exe",
+    "python", "python3", "python.exe", "python3.exe",
+    "ruby", "ruby.exe",
+    "java", "java.exe",
+    "php", "php.exe",
+    "go", "go.exe",
+    "cargo", "cargo.exe",
+    "rustup", "rustup.exe",
+    "vite", "webpack", "webpack-dev-server",
+    "ts-node", "tsx",
+  ]);
+
+  app.get("/api/system/ports", async (_req, res) => {
+    try {
+      const isWin = process.platform === "win32";
+      const ports: { pid: number; port: number; name: string }[] = [];
+
+      if (isWin) {
+        // netstat gives us port→PID mapping
+        const { stdout: netOut } = await execPromise("netstat -ano -p TCP");
+        const pidPorts = new Map<number, number[]>();
+        for (const line of netOut.split(/\r?\n/)) {
+          const m = line.match(/TCP\s+[\d.]+:(\d+)\s+[\d.]+:\d+\s+LISTENING\s+(\d+)/i);
+          if (m) {
+            const port = parseInt(m[1]);
+            const pid = parseInt(m[2]);
+            if (pid === 0) continue;
+            if (!pidPorts.has(pid)) pidPorts.set(pid, []);
+            pidPorts.get(pid)!.push(port);
+          }
+        }
+        if (pidPorts.size > 0) {
+          // tasklist gives us PID→name
+          const { stdout: taskOut } = await execPromise("tasklist /FO CSV /NH");
+          for (const line of taskOut.split(/\r?\n/)) {
+            const parts = line.split(",").map(p => p.replace(/^"|"$/g, "").trim());
+            if (parts.length < 2) continue;
+            const name = parts[0];
+            const pid = parseInt(parts[1]);
+            if (!pidPorts.has(pid)) continue;
+            // Only include developer process names
+            if (!DEV_PROCESS_NAMES.has(name.toLowerCase())) continue;
+            for (const port of pidPorts.get(pid)!) {
+              ports.push({ pid, port, name });
+            }
+          }
+        }
+      } else {
+        // Linux / macOS
+        const { stdout } = await execPromise(
+          "ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null"
+        ).catch(() => ({ stdout: "" }));
+        for (const line of stdout.split(/\r?\n/)) {
+          const mPort = line.match(/:(\d+)\s/);
+          const mPid = line.match(/pid=(\d+)/);
+          const mName = line.match(/\("([^"]+)"/);
+          if (mPort && mPid) {
+            const name = mName?.[1] ?? "process";
+            if (!DEV_PROCESS_NAMES.has(name.toLowerCase())) continue;
+            ports.push({ pid: parseInt(mPid[1]), port: parseInt(mPort[1]), name });
+          }
+        }
+      }
+
+      res.json(ports.sort((a, b) => a.port - b.port));
+    } catch {
+      res.json([]);
+    }
+  });
+
+  // Kill a process by PID (system-level)
+  app.post("/api/system/kill/:pid", async (req, res) => {
+    const pid = parseInt(req.params.pid);
+    if (isNaN(pid) || pid <= 1) return res.status(400).json({ error: "Invalid PID" });
+    try {
+      if (process.platform === "win32") {
+        await execPromise(`taskkill /PID ${pid} /F`);
+      } else {
+        process.kill(pid, "SIGTERM");
+      }
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
     }
   });
 
   app.get("/api/git/branch", async (req, res) => {
     try {
-      const { stdout } = await execPromise("git rev-parse --abbrev-ref HEAD", { cwd: process.cwd() });
+      const { stdout } = await execPromise("git rev-parse --abbrev-ref HEAD", { cwd: projectRoot });
       res.json({ branch: stdout.trim() });
     } catch (error) {
       res.json({ branch: "unknown" });
@@ -99,7 +370,7 @@ async function startServer() {
 
   app.post("/api/git/fetch", async (req, res) => {
     try {
-      const { stdout } = await execPromise("git fetch", { cwd: process.cwd() });
+      const { stdout } = await execPromise("git fetch", { cwd: projectRoot });
       res.json({ success: true, stdout });
     } catch (error) {
       res.status(500).json({ error: (error as Error).message });
@@ -108,7 +379,7 @@ async function startServer() {
 
   app.post("/api/git/status", async (req, res) => {
     try {
-      const { stdout } = await execPromise("git status --porcelain", { cwd: process.cwd() });
+      const { stdout } = await execPromise("git status --porcelain", { cwd: projectRoot });
       const files = stdout.split("\n").filter(line => line.trim()).map(line => {
         const status = line.substring(0, 2).trim();
         const path = line.substring(3).trim();
@@ -129,7 +400,7 @@ async function startServer() {
       if (/[;&|]/.test(filePath)) {
         return res.status(400).json({ error: "Invalid file path characters" });
       }
-      await execPromise(`git add -- "${filePath}"`, { cwd: process.cwd() });
+      await execPromise(`git add -- "${filePath}"`, { cwd: projectRoot });
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: (error as Error).message });
@@ -142,7 +413,7 @@ async function startServer() {
       if (/[;&|]/.test(filePath)) {
         return res.status(400).json({ error: "Invalid file path characters" });
       }
-      await execPromise(`git reset -- "${filePath}"`, { cwd: process.cwd() });
+      await execPromise(`git reset -- "${filePath}"`, { cwd: projectRoot });
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: (error as Error).message });
@@ -154,7 +425,7 @@ async function startServer() {
     try {
       // Escape single quotes for shell
       const escapedMessage = message.replace(/'/g, "'\\''");
-      const { stdout } = await execPromise(`git commit -m '${escapedMessage}'`, { cwd: process.cwd() });
+      const { stdout } = await execPromise(`git commit -m '${escapedMessage}'`, { cwd: projectRoot });
       res.json({ success: true, stdout });
     } catch (error) {
       res.status(500).json({ error: (error as Error).message });
@@ -163,7 +434,7 @@ async function startServer() {
 
   app.get("/api/git/log", async (req, res) => {
     try {
-      const { stdout } = await execPromise('git log -n 20 --pretty=format:"%H|%an|%ar|%s"', { cwd: process.cwd() });
+      const { stdout } = await execPromise('git log -n 20 --pretty=format:"%H|%an|%ar|%s"', { cwd: projectRoot });
       const commits = stdout.split("\n").filter(line => line.trim()).map(line => {
         const [hash, author, date, message] = line.split("|");
         return {
@@ -186,8 +457,8 @@ async function startServer() {
     const { cloneUrl, targetPath } = req.body;
     try {
       // Validate path
-      const absolutePath = path.resolve(process.cwd(), targetPath);
-      if (!absolutePath.startsWith(process.cwd())) {
+      const absolutePath = path.resolve(projectRoot, targetPath);
+      if (!absolutePath.startsWith(projectRoot)) {
         return res.status(403).json({ error: "Access denied: Target path must be within project root" });
       }
 
@@ -215,7 +486,7 @@ async function startServer() {
     }
   });
 
-  const CREDENTIALS_FILE = path.join(process.cwd(), 'git_credentials.json');
+  const CREDENTIALS_FILE = path.join(projectRoot, 'git_credentials.json');
 
   app.get("/api/git/credentials", async (req, res) => {
     try {
@@ -251,7 +522,7 @@ async function startServer() {
     }
   });
 
-  const EXTENSIONS_FILE = path.join(process.cwd(), 'extensions.json');
+  const EXTENSIONS_FILE = path.join(projectRoot, 'extensions.json');
 
   app.get("/api/extensions", async (req, res) => {
     try {
@@ -320,7 +591,7 @@ async function startServer() {
     }
   });
 
-  const PACKAGE_JSON = path.join(process.cwd(), 'package.json');
+  const PACKAGE_JSON = path.join(projectRoot, 'package.json');
 
   app.get("/api/dependencies", async (req, res) => {
     try {
@@ -410,12 +681,19 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), "dist");
+    // DIST_PATH env var is set by electron/main.ts with the absolute path to dist/.
+    // Fallback: __dirname = dist-server/ (from process.argv[1]), so .. = app root.
+    const distPath = process.env.DIST_PATH || path.resolve(__dirname, "..", "dist");
     app.use(express.static(distPath));
-    app.get("*", (req, res) => {
+    app.get("*", (_req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
+
+  // JSON 404 fallback — catches any unmatched route after Vite/static middleware
+  app.use((req: express.Request, res: express.Response) => {
+    res.status(404).json({ error: `Not found: ${req.method} ${req.url}` });
+  });
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);

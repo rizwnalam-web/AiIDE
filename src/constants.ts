@@ -1,4 +1,37 @@
-import { GitCommit, LLMModel } from "./types";
+import { DBConnection, GitCommit, LLMModel, TerminalTab } from "./types";
+
+// ─── App-wide configuration ──────────────────────────────────────────────────
+export const APP_TITLE = "Nexus AI Editor";
+export const APP_SUBTITLE = "Editing evolved";
+export const DEFAULT_MODEL_ID = "Claude-Sonnet-4.6";
+export const GIT_STATUS_POLL_MS = 10_000;
+export const AUTOCOMPLETE_DEBOUNCE_MS = 150;
+export const AUTOCOMPLETE_THROTTLE_MS = 100;
+export const AUTOCOMPLETE_PREFIX_LINES = 50;
+export const AUTOCOMPLETE_SUFFIX_LINES = 20;
+export const TERMINAL_HISTORY_LIMIT = 50;
+
+// ─── Initial UI state ─────────────────────────────────────────────────────────
+export const INITIAL_TERMINAL_TABS: TerminalTab[] = [
+  {
+    id: "term-1",
+    title: "zsh",
+    output: [`Welcome to ${APP_TITLE} Terminal.`, "Ready..."],
+    history: [],
+    cwd: "",
+  },
+];
+
+export const INITIAL_CHANGED_FILES: { path: string; status: string }[] = [
+  { path: "src/App.tsx", status: "M" },
+  { path: "src/services/gitService.ts", status: "M" },
+  { path: "package.json", status: "M" },
+  { path: "public/index.html", status: "U" },
+];
+
+export const INITIAL_DB_CONNECTIONS: DBConnection[] = [
+  { id: "1", name: "Internal PG", type: "postgresql", status: "connected" },
+];
 
 export const MODELS: LLMModel[] = [
   { 
@@ -64,13 +97,14 @@ export const MODELS: LLMModel[] = [
     isNew: true
   },
   { 
-    id: "Gemini-1.5-Pro", 
-    name: "Gemini 1.5 Pro", 
+    id: "gemini-2.0-flash", 
+    name: "Gemini 2.0 Flash", 
     provider: "Google", 
-    description: "Massive context window for analyzing entire codebases.", 
-    contextSize: "2M", 
+    description: "Latest stable Gemini model — fast, supports code, SQL and large context.", 
+    contextSize: "1M", 
     speed: "Fast", 
-    costMultiplier: "1.5x" 
+    costMultiplier: "1x",
+    isNew: true
   }
 ];
 

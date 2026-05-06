@@ -90,7 +90,9 @@ const insertCodeTool: FunctionDeclaration = {
 export async function* chatStream(messages: { role: string; content: string }[], modelConfig?: LLMModel) {
   const config = modelConfig || MODELS[0];
   // Map provided model IDs to actual Gemini model names if necessary
-  const modelName = config.id.toLowerCase().includes("gemini") ? config.id : "gemini-2.0-flash";
+  const modelName = config.id.toLowerCase().includes("gemini")
+    ? config.id.toLowerCase()
+    : "gemini-2.0-flash";  // fallback for non-Gemini model selections
   
   console.log(`[ChatStream] Using model: ${modelName} (${config.provider})`);
   
@@ -154,7 +156,7 @@ Always be concise and prioritize code quality.`,
 
 export async function getCodeCompletion(prefix: string, suffix: string, filename: string) {
   // Use a faster model for completions
-  const model = "gemini-1.5-flash"; 
+  const model = "gemini-2.0-flash"; 
   
   const prompt = `You are a code completion engine (sub-100ms goal). 
 Filename: ${filename}
@@ -222,14 +224,14 @@ Return both spec and body in one response, no markdown or explanations.`;
   }
 
   const result = await defaultAi.models.generateContent({
-    model: "gemini-1.5-pro",
+    model: "gemini-2.0-flash",
     contents: [{ role: "user", parts: [{ text: `${systemPrompt}\n\nTask: ${description}` }] }],
     config: { temperature: 0.2 }
   });
   return cleanPLSQLCode(result.text);
 }
 
-export async function transformSQL(code: string, mode: 'explain' | 'convert' | 'document' | 'review' | 'test' | 'profile' | 'refactor') {
+export async function transformSQL(code: string, mode: 'explain' | 'convert' | 'document' | 'review' | 'test' | 'profile' | 'refactor'): Promise<string> {
   const prompts = {
     explain: "Explain this PL/SQL code in detail. Include: purpose, logic flow, potential issues, and suggestions.",
     convert: "Convert this PL/SQL code to T-SQL (SQL Server). Maintain the same logic but use T-SQL syntax. Return only the converted code.",
@@ -266,14 +268,14 @@ Return ONLY the refactored code block.`
   };
 
   const result = await defaultAi.models.generateContent({
-    model: "gemini-1.5-pro",
+    model: "gemini-2.0-flash",
     contents: [{ role: "user", parts: [{ text: `${prompts[mode]}\n\nCode:\n${code}` }] }],
   });
   
   if (mode === 'convert') {
-    return cleanPLSQLCode(result.text);
+    return cleanPLSQLCode(result.text ?? '');
   }
-  return result.text;
+  return result.text ?? '';
 }
 
 function cleanPLSQLCode(code: string): string {

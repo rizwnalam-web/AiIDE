@@ -14,7 +14,10 @@ import {
   AlertCircle,
   Loader2,
   ChevronRight,
-  ExternalLink
+  ExternalLink,
+  FolderOpen,
+  Link as LinkIcon,
+  FolderSearch,
 } from 'lucide-react';
 import { gitService, Repository, GitProvider, GitAuth } from '../services/gitIntegrationService';
 import { cn } from '../lib/utils';
@@ -35,14 +38,16 @@ const PROVIDERS: { id: GitProvider; name: string; icon: any; color: string }[] =
 ];
 
 export const CloneRepoModal: React.FC<CloneRepoModalProps> = ({ isOpen, onClose, onCloneSuccess }) => {
-  const [step, setStep] = useState<'provider' | 'auth' | 'repos' | 'cloning'>('provider');
+  const [step, setStep] = useState<'provider' | 'auth' | 'repos' | 'cloning' | 'url'>('provider');
   const [selectedProvider, setSelectedProvider] = useState<GitProvider | null>(null);
   const [auth, setAuth] = useState<Partial<GitAuth>>({});
   const [repos, setRepos] = useState<Repository[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [targetPath, setTargetPath] = useState('external-repos');
+  const [targetPath, setTargetPath] = useState('');
+  const [cloneUrl, setCloneUrl] = useState('');
+  const [cloneToken, setCloneToken] = useState('');
   const [rememberMe, setRememberMe] = useState(true);
   const [savedCredentials, setSavedCredentials] = useState<Record<string, Partial<GitAuth>>>({});
 
@@ -56,8 +61,36 @@ export const CloneRepoModal: React.FC<CloneRepoModalProps> = ({ isOpen, onClose,
       setRepos([]);
       setError(null);
       setIsLoading(false);
+      setCloneUrl('');
+      setCloneToken('');
     }
   }, [isOpen]);
+
+  /** Open a native folder-picker to choose the clone destination parent. */
+  const browseTargetDir = async (repoName?: string) => {
+    let folder: string | null = null;
+    if ((window as any).electronAPI?.isElectron) {
+      folder = await (window as any).electronAPI.openFolder();
+    } else {
+      folder = window.prompt('Enter parent directory path for clone:') ?? null;
+    }
+    if (folder) {
+      setTargetPath(repoName ? `${folder}/${repoName}` : folder);
+    }
+  };
+
+  /** Open a native folder picker and immediately open the chosen folder as a project. */
+  const handleOpenLocalFolder = async () => {
+    let folder: string | null = null;
+    if ((window as any).electronAPI?.isElectron) {
+      folder = await (window as any).electronAPI.openFolder();
+    } else {
+      folder = window.prompt('Enter the full path to the project folder:') ?? null;
+    }
+    if (!folder) return;
+    onCloneSuccess(folder);
+    onClose();
+  };
 
   const handleProviderSelect = (provider: GitProvider) => {
     setSelectedProvider(provider);
@@ -95,18 +128,70 @@ export const CloneRepoModal: React.FC<CloneRepoModalProps> = ({ isOpen, onClose,
     }
   };
 
+  /** Extract a reasonable repo name from a git URL. */
+  const repoNameFromUrl = (url: string): string => {
+    try {
+      const parts = url.replace(/\.git$/, '').split('/');
+      return parts[parts.length - 1] || 'repo';
+    } catch {
+      return 'repo';
+    }
+  };
+
+  /** Clone from a manually-entered URL. */
+  const handleCloneFromUrl = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!cloneUrl.trim()) {
+      setError('Repository URL is required');
+      return;
+    }
+    const effectiveTarget = targetPath.trim() || await (async () => {
+      await browseTargetDir(repoNameFromUrl(cloneUrl));
+      return '';
+    })();
+    if (!effectiveTarget && !targetPath.trim()) return;
+
+    const dest = targetPath.trim();
+    if (!dest) {
+      setError('Please choose a destination folder first.');
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+    setStep('cloning');
+    try {
+      const result = await gitService.cloneRepository(cloneUrl.trim(), dest, cloneToken || undefined);
+      if (result.success) {
+        onCloneSuccess(dest);
+        onClose();
+      } else {
+        setError(result.message || 'Cloning failed');
+        setStep('url');
+      }
+    } catch (err: any) {
+      setError(err.message || 'Cloning failed');
+      setStep('url');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleCloneRepo = async (repo: Repository) => {
+    if (!targetPath.trim()) {
+      setError('Choose a destination folder first (click "Browse…" below).');
+      return;
+    }
     setIsLoading(true);
     setError(null);
     setStep('cloning');
     
-    // Suggest a path based on repo name
-    const path = `${targetPath}/${repo.name}`;
+    const dest = `${targetPath}/${repo.name}`;
     
     try {
-      const result = await gitService.cloneRepository(repo.url, path, auth.token, repo.provider);
+      const result = await gitService.cloneRepository(repo.url, dest, auth.token, repo.provider);
       if (result.success) {
-        onCloneSuccess(path);
+        onCloneSuccess(dest);
         onClose();
       } else {
         setError(result.message || 'Cloning failed');
@@ -133,7 +218,7 @@ export const CloneRepoModal: React.FC<CloneRepoModalProps> = ({ isOpen, onClose,
             initial={{ opacity: 0, scale: 0.95, y: 20 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 20 }}
-            className="bg-[#1e1e1e] border border-white/10 rounded-xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[80vh]"
+            className="bg-[#1e1e1e] border border-white/10 rounded-xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]"
           >
             {/* Header */}
             <div className="px-6 py-4 border-b border-white/10 flex items-center justify-between bg-white/[0.02]">
@@ -142,8 +227,8 @@ export const CloneRepoModal: React.FC<CloneRepoModalProps> = ({ isOpen, onClose,
                   <Download size={18} />
                 </div>
                 <div>
-                  <h2 className="text-white font-medium text-lg">Clone Repository</h2>
-                  <p className="text-[#858585] text-xs">Import from your favorite git provider</p>
+                  <h2 className="text-white font-medium text-lg">Open Project</h2>
+                  <p className="text-[#858585] text-xs">Browse from your computer or clone from a repository</p>
                 </div>
               </div>
               <button 
@@ -164,19 +249,135 @@ export const CloneRepoModal: React.FC<CloneRepoModalProps> = ({ isOpen, onClose,
               )}
 
               {step === 'provider' && (
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                  {PROVIDERS.map((p, idx) => (
-                    <button
-                      key={`${p.id}-${idx}`}
-                      onClick={() => handleProviderSelect(p.id)}
-                      className="flex flex-col items-center gap-4 p-6 rounded-xl border border-white/5 bg-white/[0.02] hover:bg-white/[0.05] hover:border-white/10 transition-all group"
-                    >
-                      <div className="w-12 h-12 rounded-xl flex items-center justify-center text-white shadow-lg transition-transform group-hover:scale-110" style={{ backgroundColor: p.color }}>
-                        <p.icon size={24} />
-                      </div>
-                      <span className="text-sm font-medium text-[#cccccc] group-hover:text-white">{p.name}</span>
+                <div className="space-y-6">
+                  {/* ── Local folder / URL ─────────────────────────────── */}
+                  <div>
+                    <p className="text-[10px] text-[#858585] uppercase font-bold tracking-widest mb-3">Local</p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <button
+                        onClick={handleOpenLocalFolder}
+                        className="flex items-center gap-4 p-5 rounded-xl border border-white/5 bg-white/[0.02] hover:bg-vscode-blue/10 hover:border-vscode-blue/30 transition-all group text-left"
+                      >
+                        <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-vscode-blue/20 text-vscode-blue transition-transform group-hover:scale-110">
+                          <FolderOpen size={20} />
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold text-white">Open Folder</p>
+                          <p className="text-[11px] text-[#858585] mt-0.5">Browse your computer</p>
+                        </div>
+                      </button>
+                      <button
+                        onClick={() => { setError(null); setStep('url'); }}
+                        className="flex items-center gap-4 p-5 rounded-xl border border-white/5 bg-white/[0.02] hover:bg-agent-teal/10 hover:border-agent-teal/30 transition-all group text-left"
+                      >
+                        <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-agent-teal/20 text-agent-teal transition-transform group-hover:scale-110">
+                          <LinkIcon size={20} />
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold text-white">Clone from URL</p>
+                          <p className="text-[11px] text-[#858585] mt-0.5">Paste any git URL</p>
+                        </div>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* ── Authenticated providers ─────────────────────────── */}
+                  <div>
+                    <p className="text-[10px] text-[#858585] uppercase font-bold tracking-widest mb-3">Clone from provider</p>
+                    <div className="grid grid-cols-3 gap-3">
+                      {PROVIDERS.map((p, idx) => (
+                        <button
+                          key={`${p.id}-${idx}`}
+                          onClick={() => handleProviderSelect(p.id)}
+                          className="flex flex-col items-center gap-3 p-5 rounded-xl border border-white/5 bg-white/[0.02] hover:bg-white/[0.05] hover:border-white/10 transition-all group"
+                        >
+                          <div className="w-10 h-10 rounded-xl flex items-center justify-center text-white shadow-lg transition-transform group-hover:scale-110" style={{ backgroundColor: p.color }}>
+                            <p.icon size={20} />
+                          </div>
+                          <span className="text-xs font-medium text-[#cccccc] group-hover:text-white">{p.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ── Clone from URL ────────────────────────────────────── */}
+              {step === 'url' && (
+                <div className="max-w-lg mx-auto">
+                  <div className="flex items-center gap-3 mb-6">
+                    <button onClick={() => { setStep('provider'); setError(null); }} className="text-[#858585] hover:text-white transition-colors p-1">
+                      <X size={16} />
                     </button>
-                  ))}
+                    <div className="flex items-center gap-2">
+                      <div className="w-6 h-6 rounded flex items-center justify-center bg-agent-teal/20 text-agent-teal">
+                        <LinkIcon size={14} />
+                      </div>
+                      <span className="text-white font-medium">Clone from URL</span>
+                    </div>
+                  </div>
+
+                  <form onSubmit={handleCloneFromUrl} className="space-y-5">
+                    <div className="space-y-2">
+                      <label className="text-xs font-medium text-[#858585] uppercase tracking-wider">Repository URL</label>
+                      <input
+                        type="text"
+                        autoFocus
+                        placeholder="https://github.com/owner/repo.git"
+                        className="w-full bg-black/30 border border-white/10 rounded-lg px-4 py-3 text-sm text-white focus:outline-none focus:border-vscode-blue transition-colors font-mono"
+                        value={cloneUrl}
+                        onChange={(e) => {
+                          setCloneUrl(e.target.value);
+                          if (targetPath === '' || targetPath.endsWith('/' + repoNameFromUrl(cloneUrl))) {
+                            // auto-suggest repo name only if user hasn't customised the path
+                          }
+                        }}
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-xs font-medium text-[#858585] uppercase tracking-wider">Access Token <span className="normal-case font-normal text-[#555]">(optional, for private repos)</span></label>
+                      <div className="relative">
+                        <input
+                          type="password"
+                          placeholder="ghp_..."
+                          className="w-full bg-black/30 border border-white/10 rounded-lg px-4 py-3 text-sm text-white focus:outline-none focus:border-vscode-blue transition-colors pr-10"
+                          value={cloneToken}
+                          onChange={(e) => setCloneToken(e.target.value)}
+                        />
+                        <Lock className="absolute right-4 top-1/2 -translate-y-1/2 text-white/20" size={16} />
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-xs font-medium text-[#858585] uppercase tracking-wider">Destination Folder</label>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          placeholder="Pick a folder →"
+                          className="flex-1 bg-black/30 border border-white/10 rounded-lg px-4 py-3 text-sm text-white focus:outline-none focus:border-vscode-blue transition-colors font-mono"
+                          value={targetPath}
+                          onChange={(e) => setTargetPath(e.target.value)}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => browseTargetDir(cloneUrl ? repoNameFromUrl(cloneUrl) : undefined)}
+                          className="px-4 py-3 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 text-[#cccccc] hover:text-white transition-all flex items-center gap-2 text-sm whitespace-nowrap"
+                        >
+                          <FolderSearch size={16} />
+                          Browse…
+                        </button>
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={isLoading || !cloneUrl.trim() || !targetPath.trim()}
+                      className="w-full bg-vscode-blue hover:bg-vscode-blue/80 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium py-3 rounded-lg transition-all flex items-center justify-center gap-2"
+                    >
+                      {isLoading ? <Loader2 className="animate-spin" size={18} /> : <><Download size={18} /><span>Clone Repository</span></>}
+                    </button>
+                  </form>
                 </div>
               )}
 
@@ -238,7 +439,7 @@ export const CloneRepoModal: React.FC<CloneRepoModalProps> = ({ isOpen, onClose,
                     <button 
                       type="submit"
                       disabled={isLoading || !auth.token}
-                      className="w-full bg-vscode-blue hover:bg-vscode-blue-dark disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-3 rounded-lg transition-all flex items-center justify-center gap-2"
+                      className="w-full bg-vscode-blue hover:bg-vscode-blue/80 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-3 rounded-lg transition-all flex items-center justify-center gap-2"
                     >
                       {isLoading ? <Loader2 className="animate-spin" size={18} /> : <span>Fetch Repositories</span>}
                       {!isLoading && <ChevronRight size={18} />}
@@ -268,7 +469,7 @@ export const CloneRepoModal: React.FC<CloneRepoModalProps> = ({ isOpen, onClose,
                     </button>
                   </div>
 
-                  <div className="space-y-2 max-h-[400px] overflow-y-auto custom-scrollbar pr-2">
+                  <div className="space-y-2 max-h-[360px] overflow-y-auto custom-scrollbar pr-2">
                     {filteredRepos.length > 0 ? (
                       filteredRepos.map((repo, idx) => (
                         <div 
@@ -337,22 +538,27 @@ export const CloneRepoModal: React.FC<CloneRepoModalProps> = ({ isOpen, onClose,
               )}
             </div>
 
-            {/* Footer */}
-            {(step === 'repos' || step === 'auth') && (
-              <div className="px-6 py-4 border-t border-white/10 bg-white/[0.02] flex items-center justify-between">
-                <div className="flex items-center gap-2 text-[#858585] text-[10px] uppercase tracking-widest font-bold">
+            {/* Footer — clone destination picker (shown in repos & url steps) */}
+            {(step === 'repos') && (
+              <div className="px-6 py-4 border-t border-white/10 bg-white/[0.02] flex items-center justify-between gap-4">
+                <div className="flex items-center gap-2 text-[#858585] text-[10px] uppercase tracking-widest font-bold shrink-0">
                   <TerminalIcon size={12} />
-                  <span>git clone active</span>
+                  <span>Clone destination</span>
                 </div>
-                <div className="flex items-center gap-4">
-                   <div className="flex items-center gap-2">
-                     <span className="text-xs text-[#858585]">Target:</span>
-                     <input 
-                       className="bg-transparent border-none outline-none text-xs text-white font-mono"
-                       value={targetPath}
-                       onChange={(e) => setTargetPath(e.target.value)}
-                     />
-                   </div>
+                <div className="flex items-center gap-2 flex-1 min-w-0">
+                  <input 
+                    className="flex-1 bg-transparent border border-white/10 rounded px-2 py-1 outline-none text-xs text-white font-mono min-w-0 focus:border-vscode-blue transition-colors"
+                    placeholder="Pick a folder…"
+                    value={targetPath}
+                    onChange={(e) => setTargetPath(e.target.value)}
+                  />
+                  <button
+                    onClick={() => browseTargetDir()}
+                    className="px-3 py-1.5 rounded border border-white/10 bg-white/5 hover:bg-white/10 text-[#cccccc] hover:text-white transition-all flex items-center gap-1.5 text-xs whitespace-nowrap"
+                  >
+                    <FolderSearch size={14} />
+                    Browse…
+                  </button>
                 </div>
               </div>
             )}
@@ -362,6 +568,7 @@ export const CloneRepoModal: React.FC<CloneRepoModalProps> = ({ isOpen, onClose,
     </AnimatePresence>
   );
 };
+
 
 function TerminalIcon({ size }: { size: number }) {
   return (

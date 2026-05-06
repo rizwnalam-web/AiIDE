@@ -54,10 +54,21 @@ import {
   FolderOpen,
   File as FileIcon,
   Link as LinkIcon,
-  Accessibility
+  Accessibility,
+  Layers,
+  Smartphone,
+  Monitor,
+  Globe,
+  Package,
+  Server,
+  Apple,
+  Tv2,
+  CheckSquare,
+  Square
 } from "lucide-react";
 import { MemoryPalace } from "./components/MemoryPalace";
 import { CloneRepoModal } from "./components/CloneRepoModal";
+import { SetupWizard } from "./components/SetupWizard";
 import { ExtensionMarketplace } from "./components/ExtensionMarketplace";
 import { DependencyExplorer } from "./components/DependencyExplorer";
 import { motion, AnimatePresence } from "motion/react";
@@ -98,7 +109,20 @@ function MarkdownOutput({ content, placeholder }: { content: string, placeholder
   );
 }
 
-import { MODELS, MOCK_GIT_COMMITS } from "./constants";
+import { 
+  MODELS, 
+  MOCK_GIT_COMMITS, 
+  INITIAL_TERMINAL_TABS, 
+  INITIAL_CHANGED_FILES, 
+  INITIAL_DB_CONNECTIONS,
+  DEFAULT_MODEL_ID,
+  GIT_STATUS_POLL_MS,
+  AUTOCOMPLETE_DEBOUNCE_MS,
+  AUTOCOMPLETE_THROTTLE_MS,
+  AUTOCOMPLETE_PREFIX_LINES,
+  AUTOCOMPLETE_SUFFIX_LINES,
+  TERMINAL_HISTORY_LIMIT,
+} from "./constants";
 
 /**
  * App.tsx: The main entry point for the Nexus AI Editor.
@@ -190,12 +214,7 @@ export default function App() {
     graph: true
   });
   const [commitMessage, setCommitMessage] = useState("");
-  const [changedFiles, setChangedFiles] = useState([
-    { path: 'src/App.tsx', status: 'M' },
-    { path: 'src/services/gitService.ts', status: 'M' },
-    { path: 'package.json', status: 'M' },
-    { path: 'public/index.html', status: 'U' }
-  ]);
+  const [changedFiles, setChangedFiles] = useState(INITIAL_CHANGED_FILES);
   const [stagedFiles, setStagedFiles] = useState<{path: string, status: string}[]>([]);
   const [availableModels, setAvailableModels] = useState<LLMModel[]>(MODELS);
   const [commits, setCommits] = useState<GitCommit[]>(MOCK_GIT_COMMITS);
@@ -207,17 +226,22 @@ export default function App() {
   const [fileContent, setFileContent] = useState<string>("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([
-    { id: "term-1", title: "zsh", output: ["Welcome to Nexus AI Editor Terminal.", "Ready..."], history: [], cwd: "/" }
-  ]);
+  const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>(INITIAL_TERMINAL_TABS);
   const [activeTerminalTabId, setActiveTerminalTabId] = useState("term-1");
   const [terminalSearchOpen, setTerminalSearchOpen] = useState(false);
   const [terminalSearchQuery, setTerminalSearchQuery] = useState("");
+  const [terminalInput, setTerminalInput] = useState("");
+  const [terminalHistoryIndex, setTerminalHistoryIndex] = useState(-1);
+  const [projectRoot, setProjectRoot] = useState("");
+  const sseRef = useRef<Map<string, EventSource>>(new Map());
+  const [sessionMeta, setSessionMeta] = useState<Map<string, import('./types').SessionMeta>>(new Map());
+  const [sessionTick, setSessionTick] = useState(0);
+  const [systemPorts, setSystemPorts] = useState<{ pid: number; port: number; name: string }[]>([]);
   const [userInput, setUserInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [chatMode, setChatMode] = useState<"general" | "sql">("general");
   const [selectedAgentMode, setSelectedAgentMode] = useState<"agent" | "ask" | "plan">("agent");
-  const [selectedModelId, setSelectedModelId] = useState("Claude-Sonnet-4.6");
+  const [selectedModelId, setSelectedModelId] = useState(DEFAULT_MODEL_ID);
   const [modelSearchQuery, setModelSearchQuery] = useState("");
   const [isModelSelectorOpen, setIsModelSelectorOpen] = useState(false);
   const [isAgentSelectorOpen, setIsAgentSelectorOpen] = useState(false);
@@ -236,9 +260,7 @@ export default function App() {
     event: "INSERT",
     action: ""
   });
-  const [dbConnections, setDbConnections] = useState<DBConnection[]>([
-    { id: "1", name: "Internal PG", type: "postgresql", status: "connected" }
-  ]);
+  const [dbConnections, setDbConnections] = useState<DBConnection[]>(INITIAL_DB_CONNECTIONS);
   const [isRecording, setIsRecording] = useState(false);
   const [voiceTranscript, setVoiceTranscript] = useState("");
   const [collabSession, setCollabSession] = useState<CollaborationSession | null>(null);
@@ -313,6 +335,89 @@ export default function App() {
   useEffect(() => {
     addTimelineEvent("session_start", "Nexus IDE Session Started");
     fetchFileTree();
+
+    // Restore the server's current root so the sidebar title is correct on page load
+    fetch("/api/get-root").then(r => r.json()).then(d => {
+      if (d.root) setProjectRoot(d.root);
+    }).catch(() => {});
+
+    // Register global hook for Electron menu items
+    window.__nexus = {
+      save: handleSave,
+      saveAll: handleSave, // saves active file; extend for multi-tab
+      newFile: () => {
+        const newFile = "Untitled-1.ts";
+        setOpenFiles(prev => [...prev, newFile]);
+        setActiveFile(newFile);
+        setFileContent("");
+        setShowWelcome(false);
+      },
+      revertFile: () => {
+        // Re-fetch the file from disk to discard unsaved changes
+        if (activeFile) handleFileClick(activeFile);
+      },
+      closeEditor: () => {
+        setOpenFiles(prev => {
+          const next = prev.filter(f => f !== activeFile);
+          setActiveFile(next.length > 0 ? next[next.length - 1] : null);
+          if (next.length === 0) setShowWelcome(true);
+          return next;
+        });
+      },
+    };
+
+    // Electron menu: navigate to a view
+    window.electronAPI?.onGoToView((view) => setActiveView(view as any));
+
+    // Electron menu / IPC: open a folder path
+    window.electronAPI?.onOpenFolder((folderPath) => openFolder(folderPath));
+
+    // File → Save As
+    window.electronAPI?.onSaveAs(async (filePath) => {
+      try {
+        await fetch('/api/write-file', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filePath, content: fileContent }),
+        });
+        setActiveFile(filePath);
+        setOpenFiles(prev => prev.includes(filePath) ? prev : [...prev, filePath]);
+        updateActiveTerminalOutput(`✓ Saved as ${filePath}`);
+      } catch (err) {
+        updateActiveTerminalOutput(`Error saving as: ${(err as Error).message}`);
+      }
+    });
+
+    // File → Auto Save toggle
+    window.electronAPI?.onAutoSave((enabled) => {
+      updateActiveTerminalOutput(`Auto Save ${enabled ? 'enabled' : 'disabled'}`);
+    });
+
+    // File → Close Folder
+    window.electronAPI?.onCloseFolder(() => {
+      setOpenFiles([]);
+      setActiveFile(null);
+      setFileContent("");
+      setFileTree([]);
+      setShowWelcome(true);
+      fetch('/api/set-root', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folderPath: '' }) }).catch(() => {});
+      updateActiveTerminalOutput('Folder closed.');
+    });
+
+    // File → Clear Recently Opened
+    window.electronAPI?.onClearRecent(() => {
+      updateActiveTerminalOutput('Recently opened list cleared.');
+    });
+
+    return () => {
+      window.electronAPI?.removeAllListeners('menu:go');
+      window.electronAPI?.removeAllListeners('menu:open-folder');
+      window.electronAPI?.removeAllListeners('menu:save-as');
+      window.electronAPI?.removeAllListeners('menu:auto-save');
+      window.electronAPI?.removeAllListeners('menu:close-folder');
+      window.electronAPI?.removeAllListeners('menu:clear-recent');
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -336,6 +441,52 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
   }, [terminalSearchOpen, activePanelTab]);
 
+  // ── Poll server for running sessions + system ports ──
+  useEffect(() => {
+    const sync = async () => {
+      try {
+        // 1. App-managed sessions (spawned via POST /api/terminal)
+        const sessRes = await fetch("/api/terminal/sessions");
+        if (sessRes.ok) {
+          const list: { sessionId: string; command: string; startTime: number; cwd: string }[] = await sessRes.json();
+          setSessionMeta(prev => {
+            const next = new Map(prev);
+            for (const s of list) {
+              if (!next.has(s.sessionId)) {
+                next.set(s.sessionId, {
+                  sessionId: s.sessionId,
+                  command: s.command,
+                  startTime: s.startTime,
+                  tabId: "external",
+                  tabTitle: s.cwd ? s.cwd.replace(/\\/g, '/').split('/').pop() ?? 'External' : 'External',
+                });
+              }
+            }
+            const serverIds = new Set(list.map(s => s.sessionId));
+            for (const id of next.keys()) {
+              if (!serverIds.has(id)) next.delete(id);
+            }
+            return next;
+          });
+        }
+      } catch {}
+
+      try {
+        // 2. System-level listening ports (Vite, webpack-dev-server, etc.)
+        const portRes = await fetch("/api/system/ports");
+        if (portRes.ok) {
+          const ports: { pid: number; port: number; name: string }[] = await portRes.json();
+          setSystemPorts(ports);
+        }
+      } catch {}
+    };
+
+    sync();
+    const interval = setInterval(sync, 3000);
+    const tick = setInterval(() => setSessionTick(t => t + 1), 1000);
+    return () => { clearInterval(interval); clearInterval(tick); };
+  }, []);
+
   const handleEditorWillMount = (monaco: any) => {
     // Register inline completion provider
     monaco.languages.registerInlineCompletionsProvider({ pattern: "**" }, {
@@ -345,14 +496,14 @@ export default function App() {
         
         // Throttling: if we requested too recently, skip
         const now = Date.now();
-        if (now - lastCompletionTime.current < 100) return { items: [] };
+    if (now - lastCompletionTime.current < AUTOCOMPLETE_THROTTLE_MS) return { items: [] };
 
         return new Promise((resolve) => {
           completionTimeoutRef.current = setTimeout(async () => {
             lastCompletionTime.current = Date.now();
             
             const prefix = model.getValueInRange({
-              startLineNumber: Math.max(1, position.lineNumber - 50),
+              startLineNumber: Math.max(1, position.lineNumber - AUTOCOMPLETE_PREFIX_LINES),
               startColumn: 1,
               endLineNumber: position.lineNumber,
               endColumn: position.column
@@ -361,7 +512,7 @@ export default function App() {
             const suffix = model.getValueInRange({
               startLineNumber: position.lineNumber,
               startColumn: position.column,
-              endLineNumber: Math.min(model.getLineCount(), position.lineNumber + 20),
+              endLineNumber: Math.min(model.getLineCount(), position.lineNumber + AUTOCOMPLETE_SUFFIX_LINES),
               endColumn: 1
             });
 
@@ -383,7 +534,7 @@ export default function App() {
             } catch (err) {
               resolve({ items: [] });
             }
-          }, 150); // 150ms debounce
+          }, AUTOCOMPLETE_DEBOUNCE_MS); // debounce
         });
       },
       freeInlineCompletions: () => {}
@@ -489,6 +640,67 @@ export default function App() {
     }
   };
 
+  /**
+   * Open a folder as the new project root.
+   * In Electron: uses the native dialog via IPC if no path is provided.
+   * In web: sends a path from a prompt fallback.
+   */
+  const openFolder = async (folderPath?: string) => {
+    try {
+      let targetPath = folderPath;
+
+      if (!targetPath) {
+        // Electron native dialog
+        if (window.electronAPI?.isElectron) {
+          const picked = await window.electronAPI.openFolder();
+          if (!picked) return;
+          targetPath = picked;
+        } else {
+          // Web fallback: let user type a path
+          const typed = window.prompt("Enter full folder path to open:");
+          if (!typed) return;
+          targetPath = typed.trim();
+        }
+      }
+
+      updateActiveTerminalOutput(`Opening folder: ${targetPath}…`);
+
+      const res = await fetch("/api/set-root", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folderPath: targetPath }),
+      });
+      // Read as text first so the body stream is never double-consumed
+      const rawText = await res.text();
+      let data: { success?: boolean; error?: string; root?: string };
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        const hint = res.status === 404 ? " (server may be outdated — please restart the dev server)" : "";
+        throw new Error(`Server error (${res.status})${hint}: ${rawText.slice(0, 200) || "(empty response)"}`);
+      }
+      if (!data.success) throw new Error(data.error ?? `Unexpected server response (${res.status})`);
+
+      // Store root so the terminal prompt can display it
+      setProjectRoot(data.root ?? targetPath ?? "");
+
+      // Reset editor state for the new project
+      setOpenFiles([]);
+      setActiveFile(null);
+      setFileContent("");
+      setShowWelcome(false);
+      setActiveView("files");
+      // Reset terminal cwd to the new project root
+      setTerminalTabs(prev => prev.map(tab => ({ ...tab, cwd: "" })));
+      await fetchFileTree();
+
+      updateActiveTerminalOutput(`✓ Opened folder: ${targetPath}`);
+      addTimelineEvent("command", `Opened folder: ${targetPath}`, { path: targetPath });
+    } catch (err) {
+      updateActiveTerminalOutput(`Error opening folder: ${(err as Error).message}`);
+    }
+  };
+
   const handleAgentTrigger = async (agentType: "review" | "test" | "profile" | "refactor") => {
     if (!activeFile) {
        updateActiveTerminalOutput("⚠ Please open a file first.");
@@ -501,9 +713,9 @@ export default function App() {
     try {
        const result = await transformSQL(fileContent, agentType); 
        
-       if (agentType === "review") setReviewResults(result);
-       else if (agentType === "test") setTestGenResults(result);
-       else if (agentType === "profile") setProfilerResults(result);
+       if (agentType === "review") setReviewResults(result ?? "");
+       else if (agentType === "test") setTestGenResults(result ?? "");
+       else if (agentType === "profile") setProfilerResults(result ?? "");
        else if (agentType === "refactor") {
          const newProposal: RefactoringProposal = {
            id: Math.random().toString(36).substr(2, 9),
@@ -511,7 +723,7 @@ export default function App() {
            description: "Refactored code for better maintainability and performance based on structural analysis.",
            impact: "high",
            filePath: activeFile,
-           diff: result,
+           diff: result ?? "",
            status: "pending"
          };
          setProposals(prev => [newProposal, ...prev]);
@@ -722,25 +934,26 @@ export default function App() {
       setIsTyping(true);
       try {
         const result = await transformSQL(selectedCode, type as any);
+        const resultStr = result ?? "";
         if (type === "document") {
-          setPlsqlDocs(result);
+          setPlsqlDocs(resultStr);
           setActivePanelTab("plsql_docs");
           updateActiveTerminalOutput("✓ Documentation generated in PL/SQL tab.");
         } else if (type === "convert") {
            setChatMessages(prev => [...prev, 
             { role: "user", content: `Convert this code to T-SQL: \n\n\`\`\`sql\n${selectedCode}\n\`\`\`` },
-            { role: "assistant", content: result, actions: [{
+            { role: "assistant", content: resultStr, actions: [{
               id: Math.random().toString(36).substr(2, 9),
               type: "insert_code",
               description: "Insert Converted T-SQL",
-              content: result,
+              content: resultStr,
               status: "pending"
             }] }
           ]);
         } else {
           setChatMessages(prev => [...prev, 
             { role: "user", content: `Explain this code: \n\n\`\`\`sql\n${selectedCode}\n\`\`\`` },
-            { role: "assistant", content: result }
+            { role: "assistant", content: resultStr }
           ]);
         }
       } catch (err) {
@@ -852,6 +1065,15 @@ export default function App() {
       }
     } catch (err) {
       console.error("Stream error", err);
+      // Show the error in the chat bubble instead of leaving it blank
+      setChatMessages(prev => {
+        const newMsgs = [...prev];
+        const last = newMsgs[newMsgs.length - 1];
+        if (last.role === "assistant" && !last.content) {
+          last.content = `⚠ Error: ${(err as Error).message || "Unknown error. Check your API key and model selection."}`;
+        }
+        return newMsgs;
+      });
     } finally {
       setIsTyping(false);
     }
@@ -1012,7 +1234,7 @@ export default function App() {
 
   useEffect(() => {
     refreshGitStatus();
-    const interval = setInterval(refreshGitStatus, 10000); // Pulse every 10s
+    const interval = setInterval(refreshGitStatus, GIT_STATUS_POLL_MS);
     return () => clearInterval(interval);
   }, []);
 
@@ -1094,30 +1316,125 @@ export default function App() {
 
   const runCommand = async (cmd: string) => {
     updateActiveTerminalOutput(`➜ ${cmd}`);
-    
+
+    // ── Handle `cd` locally — track cwd per tab without a server round-trip ──
+    const cdMatch = cmd.match(/^cd\s+(.+)$/);
+    if (cdMatch || cmd === 'cd') {
+      const targetDir = cmd === 'cd' ? '' : cdMatch![1].trim();
+      setTerminalTabs(prev => prev.map(tab => {
+        if (tab.id !== activeTerminalTabId) return tab;
+        const newHistory = [cmd, ...tab.history.filter(h => h !== cmd)].slice(0, TERMINAL_HISTORY_LIMIT);
+        const newCwd = targetDir === '' ? '' : (targetDir.startsWith('/') || /^[A-Za-z]:/.test(targetDir))
+          ? targetDir
+          : `${tab.cwd ? tab.cwd + '/' : ''}${targetDir}`;
+        return { ...tab, history: newHistory, cwd: newCwd };
+      }));
+      return;
+    }
+
     // Add to history
     setTerminalTabs(prev => prev.map(tab => {
-      if (tab.id === activeTerminalTabId) {
-        const newHistory = [cmd, ...tab.history.filter(h => h !== cmd)].slice(0, 50);
-        return { ...tab, history: newHistory };
-      }
-      return tab;
+      if (tab.id !== activeTerminalTabId) return tab;
+      const newHistory = [cmd, ...tab.history.filter(h => h !== cmd)].slice(0, TERMINAL_HISTORY_LIMIT);
+      return { ...tab, history: newHistory };
     }));
 
-      try {
-        const res = await fetch("/api/terminal", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ command: cmd })
-        });
-        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-        const data = await res.json();
-        if (data.stdout) updateActiveTerminalOutput(data.stdout);
-        if (data.stderr) updateActiveTerminalOutput(`Error: ${data.stderr}`);
-        addTimelineEvent("command", `Executed: ${cmd}`, { command: cmd, result: data.stdout || data.stderr });
-      } catch (err) {
-        updateActiveTerminalOutput(`Failed: ${(err as Error).message}`);
+    const tabCwd = currentTerminalTab?.cwd || '';
+
+    try {
+      // Spawn the process on the server — returns a sessionId immediately
+      const spawnRes = await fetch("/api/terminal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ command: cmd, cwd: tabCwd }),
+      });
+      const rawText = await spawnRes.text();
+      let spawnData: { sessionId?: string; cwd?: string; error?: string };
+      try { spawnData = JSON.parse(rawText); } catch { spawnData = { error: rawText || `HTTP ${spawnRes.status}` }; }
+
+      if (!spawnRes.ok || !spawnData.sessionId) {
+        updateActiveTerminalOutput(`Error: ${spawnData.error || `HTTP ${spawnRes.status}`}`);
+        return;
       }
+
+      const { sessionId } = spawnData;
+
+      // Mark this tab as running
+      setTerminalTabs(prev => prev.map(tab =>
+        tab.id === activeTerminalTabId ? { ...tab, runningSessionId: sessionId } : tab
+      ));
+
+      // Track session metadata
+      const activeTab = terminalTabs.find(t => t.id === activeTerminalTabId);
+      setSessionMeta(prev => {
+        const next = new Map(prev);
+        next.set(sessionId, { sessionId, command: cmd, startTime: Date.now(), tabId: activeTerminalTabId, tabTitle: activeTab?.title ?? 'Terminal' });
+        return next;
+      });
+
+      // Open SSE stream to receive output
+      const es = new EventSource(`/api/terminal/stream/${sessionId}`);
+      sseRef.current.set(sessionId, es);
+
+      const appendLine = (text: string, isErr = false) => {
+        text.split('\n').filter(l => l.length > 0).forEach(line => {
+          setTerminalTabs(prev => prev.map(tab => {
+            if (tab.id !== activeTerminalTabId) return tab;
+            return { ...tab, output: [...tab.output, isErr ? `stderr: ${line}` : line] };
+          }));
+        });
+      };
+
+      es.addEventListener('message', (e) => {
+        try {
+          const { type, text } = JSON.parse(e.data);
+          if (type === 'out') appendLine(text);
+          else if (type === 'err') appendLine(text, true);
+          else if (type === 'exit') {
+            const code = parseInt(text ?? '0');
+            if (code !== 0) updateActiveTerminalOutput(`Process exited with code ${code}`);
+            es.close();
+            sseRef.current.delete(sessionId);
+            setTerminalTabs(prev => prev.map(tab =>
+              tab.runningSessionId === sessionId ? { ...tab, runningSessionId: undefined } : tab
+            ));
+            setSessionMeta(prev => { const next = new Map(prev); next.delete(sessionId); return next; });
+            addTimelineEvent("command", `Executed: ${cmd}`, { command: cmd });
+          }
+        } catch {}
+      });
+
+      es.onerror = () => {
+        es.close();
+        sseRef.current.delete(sessionId);
+        setTerminalTabs(prev => prev.map(tab =>
+          tab.runningSessionId === sessionId ? { ...tab, runningSessionId: undefined } : tab
+        ));
+        setSessionMeta(prev => { const next = new Map(prev); next.delete(sessionId); return next; });
+      };
+
+    } catch (err) {
+      updateActiveTerminalOutput(`Failed: ${(err as Error).message}`);
+    }
+  };
+
+  /** Kill any session by ID and clean up state. */
+  const killSession = async (sessionId: string) => {
+    try { await fetch(`/api/terminal/kill/${sessionId}`, { method: 'POST' }); } catch {}
+    sseRef.current.get(sessionId)?.close();
+    sseRef.current.delete(sessionId);
+    setTerminalTabs(prev => prev.map(tab =>
+      tab.runningSessionId === sessionId ? { ...tab, runningSessionId: undefined } : tab
+    ));
+    setSessionMeta(prev => { const next = new Map(prev); next.delete(sessionId); return next; });
+  };
+
+  /** Kill the running session for the active terminal tab (Ctrl+C). */
+  const killActiveSession = async () => {
+    const sessionId = currentTerminalTab?.runningSessionId;
+    if (!sessionId) return;
+    await killSession(sessionId);
+    updateActiveTerminalOutput('^C');
   };
 
   const addTerminalTab = () => {
@@ -1127,7 +1444,7 @@ export default function App() {
       title: "zsh",
       output: [`Terminal session ${terminalTabs.length + 1} started.`],
       history: [],
-      cwd: "/"
+      cwd: ""
     };
     setTerminalTabs(prev => [...prev, newTab]);
     setActiveTerminalTabId(newId);
@@ -1192,20 +1509,21 @@ export default function App() {
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar - Rails (Activity Bar) */}
         <div className="w-[48px] bg-activity-bg flex flex-col items-center py-3 gap-5 border-r border-border-dark">
-          <SidebarIcon key="view-files" icon={FileCode} active={activeView === "files"} onClick={() => setActiveView("files")} />
-          <SidebarIcon key="view-search" icon={Search} active={activeView === "search"} onClick={() => setActiveView("search")} />
-          <SidebarIcon key="view-chat" icon={MessageSquare} active={activeView === "chat"} onClick={() => setActiveView("chat")} />
-          <SidebarIcon key="view-agents" icon={BrainCog} active={activeView === "agents"} onClick={() => setActiveView("agents")} />
-          <SidebarIcon key="view-collaboration" icon={Users} active={activeView === "collaboration"} onClick={() => setActiveView("collaboration")} />
-          <SidebarIcon key="view-knowledge" icon={Library} active={activeView === "knowledge"} onClick={() => setActiveView("knowledge")} />
-          <SidebarIcon key="view-git" icon={Github} active={activeView === "git"} onClick={() => setActiveView("git")} />
-          <SidebarIcon key="view-extensions" icon={Puzzle} active={activeView === "extensions"} onClick={() => setActiveView("extensions")} />
-          <SidebarIcon key="view-timeline" icon={History} active={activeView === "timeline"} onClick={() => setActiveView("timeline")} />
-          <SidebarIcon key="view-palace" icon={Building2} active={activeView === "palace"} onClick={() => setActiveView("palace")} />
-          <SidebarIcon key="view-mcp" icon={Database} active={activeView === "mcp"} onClick={() => setActiveView("mcp")} />
+          <SidebarIcon key="view-files" icon={FileCode} label="Explorer" active={activeView === "files"} onClick={() => setActiveView("files")} />
+          <SidebarIcon key="view-search" icon={Search} label="Search" active={activeView === "search"} onClick={() => setActiveView("search")} />
+          <SidebarIcon key="view-chat" icon={MessageSquare} label="AI Chat" active={activeView === "chat"} onClick={() => setActiveView("chat")} />
+          <SidebarIcon key="view-agents" icon={BrainCog} label="Agents" active={activeView === "agents"} onClick={() => setActiveView("agents")} />
+          <SidebarIcon key="view-collaboration" icon={Users} label="Collaboration" active={activeView === "collaboration"} onClick={() => setActiveView("collaboration")} />
+          <SidebarIcon key="view-knowledge" icon={Library} label="Knowledge Base" active={activeView === "knowledge"} onClick={() => setActiveView("knowledge")} />
+          <SidebarIcon key="view-git" icon={Github} label="Source Control" active={activeView === "git"} onClick={() => setActiveView("git")} />
+          <SidebarIcon key="view-extensions" icon={Puzzle} label="Extensions" active={activeView === "extensions"} onClick={() => setActiveView("extensions")} />
+          <SidebarIcon key="view-timeline" icon={History} label="Timeline" active={activeView === "timeline"} onClick={() => setActiveView("timeline")} />
+          <SidebarIcon key="view-palace" icon={Building2} label="Memory Palace" active={activeView === "palace"} onClick={() => setActiveView("palace")} />
+          <SidebarIcon key="view-mcp" icon={Database} label="MCP Servers" active={activeView === "mcp"} onClick={() => setActiveView("mcp")} />
+          <SidebarIcon key="view-setup" icon={Layers} label="Setup & Scaffold" active={activeView === "setup"} onClick={() => setActiveView("setup")} />
           <div className="mt-auto pb-3 flex flex-col gap-5">
-            <SidebarIcon key="action-record" icon={Mic} active={isRecording} onClick={() => setIsRecording(!isRecording)} className={isRecording ? "text-red-500 animate-pulse" : ""} />
-            <SidebarIcon key="view-settings" icon={Settings} active={activeView === "settings"} onClick={() => setActiveView("settings")} />
+            <SidebarIcon key="action-record" icon={Mic} label={isRecording ? "Stop Recording" : "Voice Input"} active={isRecording} onClick={() => setIsRecording(!isRecording)} className={isRecording ? "text-red-500 animate-pulse" : ""} />
+            <SidebarIcon key="view-settings" icon={Settings} label="Settings" active={activeView === "settings"} onClick={() => setActiveView("settings")} />
           </div>
         </div>
 
@@ -1219,8 +1537,10 @@ export default function App() {
               className="bg-panel-bg border-r border-border-main flex flex-col"
             >
               <div className="p-2 uppercase text-[11px] font-bold tracking-wider text-[#858585] flex justify-between items-center select-none">
-                <span>{activeView}: CURSOR-REPLICATOR</span>
-                <X size={14} className="cursor-pointer hover:text-white" onClick={() => setIsSidebarOpen(false)} />
+                <span className="truncate" title={projectRoot || undefined}>
+                  {activeView}: {projectRoot ? projectRoot.replace(/\\/g, '/').split('/').pop() : 'NO FOLDER'}
+                </span>
+                <X size={14} className="cursor-pointer hover:text-white shrink-0 ml-1" onClick={() => setIsSidebarOpen(false)} />
               </div>
               <div className="flex-1 overflow-y-auto pt-1 custom-scrollbar">
                 {activeView === "files" && renderFileTree(fileTree)}
@@ -1635,6 +1955,7 @@ export default function App() {
                   </div>
                 )}
                 {activeView === "extensions" && <ExtensionMarketplace onCloneClick={() => setIsCloneModalOpen(true)} />}
+                {activeView === "setup" && <SetupWizard onRunCommand={(cmd: string) => { runCommand(cmd); setActivePanelTab('terminal'); }} />}
                 {activeView === "mcp" && (
                   <div className="flex flex-col h-full">
                     <div className="p-3 border-b border-border-main flex items-center justify-between">
@@ -1713,7 +2034,51 @@ export default function App() {
                      height="100%"
                      theme="vs-dark"
                      path={activeFile}
-                     language={activeFile.endsWith(".ts") || activeFile.endsWith(".tsx") ? "typescript" : "javascript"}
+                     language={(() => {
+                       const ext = activeFile.includes('.') ? activeFile.split('.').pop()?.toLowerCase() : '';
+                       const langMap: Record<string, string> = {
+                         // Web
+                         ts: 'typescript', tsx: 'typescript',
+                         js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript',
+                         html: 'html', htm: 'html',
+                         css: 'css', scss: 'scss', sass: 'scss', less: 'less',
+                         // Data / Query
+                         sql: 'sql', hql: 'sql', ddl: 'sql', dml: 'sql',
+                         // Python
+                         py: 'python', pyw: 'python', pyi: 'python',
+                         // Systems
+                         rs: 'rust',
+                         go: 'go',
+                         c: 'c', h: 'c',
+                         cpp: 'cpp', cc: 'cpp', cxx: 'cpp', hpp: 'cpp',
+                         cs: 'csharp',
+                         java: 'java',
+                         kt: 'kotlin', kts: 'kotlin',
+                         swift: 'swift',
+                         // Scripting
+                         rb: 'ruby',
+                         php: 'php',
+                         lua: 'lua',
+                         r: 'r',
+                         // Shell
+                         sh: 'shell', bash: 'shell', zsh: 'shell', fish: 'shell',
+                         ps1: 'powershell', psm1: 'powershell', psd1: 'powershell',
+                         bat: 'bat', cmd: 'bat',
+                         // Config / Data
+                         json: 'json', jsonc: 'json',
+                         yaml: 'yaml', yml: 'yaml',
+                         toml: 'ini',
+                         xml: 'xml', svg: 'xml', xsd: 'xml', xslt: 'xml',
+                         ini: 'ini', env: 'ini', cfg: 'ini', conf: 'ini',
+                         // Docs
+                         md: 'markdown', mdx: 'markdown',
+                         // Other
+                         graphql: 'graphql', gql: 'graphql',
+                         dockerfile: 'dockerfile',
+                         tf: 'hcl', hcl: 'hcl',
+                       };
+                       return langMap[ext ?? ''] ?? 'plaintext';
+                     })()}
                      value={fileContent}
                      onChange={(value) => setFileContent(value || "")}
                      beforeMount={handleEditorWillMount}
@@ -1790,10 +2155,7 @@ export default function App() {
                      setActiveView("files");
                      updateActiveTerminalOutput("Opening file browser...");
                    }}
-                   onOpenFolder={() => {
-                     setActiveView("files");
-                     updateActiveTerminalOutput("Opening folder browser...");
-                   }}
+                   onOpenFolder={() => openFolder()}
                    onCloneRepo={() => setIsCloneModalOpen(true)}
                  />
                ) : (
@@ -1816,6 +2178,23 @@ export default function App() {
                   <PanelTabItem label="TERMINAL" active={activePanelTab === "terminal"} onClick={() => setActivePanelTab("terminal")} />
                   <PanelTabItem label="DEBUG CONSOLE" active={activePanelTab === "debug"} onClick={() => setActivePanelTab("debug")} />
                   <PanelTabItem label="OUTPUT" active={activePanelTab === "output"} onClick={() => setActivePanelTab("output")} />
+                  {/* Sessions tab — shows a live count badge when sessions are running */}
+                  <button
+                    onClick={() => setActivePanelTab("sessions")}
+                    className={cn(
+                      "relative flex items-center gap-1.5 h-full px-3 text-[11px] font-bold tracking-wider transition-all border-t-2 select-none",
+                      activePanelTab === "sessions"
+                        ? "text-white border-agent-teal"
+                        : "text-[#858585] border-transparent hover:text-[#cccccc]"
+                    )}
+                  >
+                    SESSIONS
+                    {sessionMeta.size > 0 && (
+                      <span className="flex items-center justify-center w-4 h-4 rounded-full bg-agent-teal text-[#090909] text-[8px] font-extrabold animate-pulse">
+                        {sessionMeta.size}
+                      </span>
+                    )}
+                  </button>
                   <PanelTabItem label="PL/SQL DOCS" active={activePanelTab === "plsql_docs"} onClick={() => setActivePanelTab("plsql_docs")} color="text-agent-teal" />
                   <PanelTabItem label="CODE REVIEW" active={activePanelTab === "review_results"} onClick={() => setActivePanelTab("review_results")} color="text-orange-400" />
                   <PanelTabItem label="TEST GEN" active={activePanelTab === "test_gen"} onClick={() => setActivePanelTab("test_gen")} color="text-green-400" />
@@ -1849,6 +2228,10 @@ export default function App() {
                     >
                       <Terminal size={10} />
                       <span className="truncate max-w-[80px]">{tab.title}</span>
+                      {/* Pulsing dot when this tab has a running session */}
+                      {tab.runningSessionId && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse shrink-0" />
+                      )}
                       {terminalTabs.length > 1 && (
                         <button 
                           onClick={(e) => closeTerminalTab(tab.id, e)}
@@ -1937,23 +2320,183 @@ export default function App() {
                      {currentTerminalTab.output.map((line, i) => (
                        <TerminalLine key={`t-${i}`} content={line} searchQuery={terminalSearchOpen ? terminalSearchQuery : ""} />
                      ))}
+
+                     {/* Prompt row */}
                      <div className="flex items-center gap-2 mt-2 group/term">
-                        <span className="text-agent-teal">➜</span>
-                        <span className="text-vscode-blue/60 text-[10px] select-none font-bold">~</span>
-                        <input 
-                          type="text" 
-                          className="flex-1 bg-transparent border-none outline-none text-[#cccccc] caret-agent-teal" 
-                          placeholder="Type a command..."
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              runCommand(e.currentTarget.value);
-                              e.currentTarget.value = "";
-                            }
-                          }}
-                        />
+                        {currentTerminalTab.runningSessionId ? (
+                          /* Running indicator */
+                          <>
+                            <span className="text-yellow-400 animate-pulse text-[10px] font-bold">●</span>
+                            <span className="text-[#858585] text-[10px] select-none">running…</span>
+                            <button
+                              onClick={killActiveSession}
+                              className="ml-auto text-[9px] px-2 py-0.5 rounded bg-red-500/20 text-red-400 hover:bg-red-500/40 font-bold uppercase tracking-wider"
+                              title="Ctrl+C — interrupt process"
+                            >
+                              ■ Ctrl+C
+                            </button>
+                          </>
+                        ) : (
+                          /* Normal input row with path */
+                          <>
+                            <span className="text-agent-teal shrink-0">➜</span>
+                            <span className="text-vscode-blue/70 text-[10px] select-none font-bold shrink-0 max-w-[160px] truncate" title={`${projectRoot}${currentTerminalTab.cwd ? '/' + currentTerminalTab.cwd : ''}`}>
+                              ~/{[
+                                projectRoot ? projectRoot.replace(/\\/g, '/').split('/').pop() : null,
+                                currentTerminalTab.cwd || null,
+                              ].filter(Boolean).join('/')}
+                            </span>
+                            <input
+                              type="text"
+                              value={terminalInput}
+                              onChange={(e) => {
+                                setTerminalInput(e.target.value);
+                                setTerminalHistoryIndex(-1);
+                              }}
+                              className="flex-1 bg-transparent border-none outline-none text-[#cccccc] caret-agent-teal min-w-0"
+                              placeholder="Type a command…"
+                              onKeyDown={(e) => {
+                                e.stopPropagation();
+                                // Ctrl+C when a session is running → kill it
+                                if (e.ctrlKey && e.key === 'c') {
+                                  e.preventDefault();
+                                  killActiveSession();
+                                  return;
+                                }
+                                const history = currentTerminalTab?.history ?? [];
+                                if (e.key === 'Enter') {
+                                  const cmd = terminalInput.trim();
+                                  if (cmd) {
+                                    runCommand(cmd);
+                                    setTerminalHistoryIndex(-1);
+                                  }
+                                  setTerminalInput("");
+                                } else if (e.key === 'ArrowUp') {
+                                  e.preventDefault();
+                                  const next = Math.min(terminalHistoryIndex + 1, history.length - 1);
+                                  setTerminalHistoryIndex(next);
+                                  setTerminalInput(history[next] ?? "");
+                                } else if (e.key === 'ArrowDown') {
+                                  e.preventDefault();
+                                  const next = terminalHistoryIndex - 1;
+                                  if (next < 0) {
+                                    setTerminalHistoryIndex(-1);
+                                    setTerminalInput("");
+                                  } else {
+                                    setTerminalHistoryIndex(next);
+                                    setTerminalInput(history[next] ?? "");
+                                  }
+                                }
+                              }}
+                            />
+                          </>
+                        )}
                      </div>
                    </div>
                  )}
+                 {/* ── Sessions panel ── */}
+                 {activePanelTab === "sessions" && (
+                   <div className="space-y-4">
+
+                     {/* ── Section 1: App-managed sessions ── */}
+                     <div>
+                       <div className="flex items-center justify-between mb-2">
+                         <span className="text-[10px] font-bold uppercase tracking-widest text-[#858585]">App Sessions</span>
+                         {sessionMeta.size > 1 && (
+                           <button
+                             onClick={async () => { await Promise.all([...sessionMeta.keys()].map(id => killSession(id))); }}
+                             className="text-[9px] px-2 py-0.5 rounded bg-red-500/20 text-red-400 hover:bg-red-500/40 font-bold uppercase tracking-wider transition-colors"
+                           >
+                             Kill All
+                           </button>
+                         )}
+                       </div>
+                       {sessionMeta.size === 0 ? (
+                         <div className="flex items-center gap-2 px-3 py-2 rounded border border-white/5 bg-[#1a1a1a] text-[#555] text-[10px] italic">
+                           <Terminal size={11} className="opacity-40" />
+                           No app sessions running
+                         </div>
+                       ) : (
+                         <div className="space-y-1.5">
+                           {[...sessionMeta.values()].map((meta) => {
+                             void sessionTick;
+                             const elapsed = Math.floor((Date.now() - meta.startTime) / 1000);
+                             const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
+                             const ss = String(elapsed % 60).padStart(2, '0');
+                             const isExternal = meta.tabId === 'external';
+                             return (
+                               <div key={meta.sessionId} className="border border-white/10 rounded-md bg-[#1a1a2e] px-3 py-2.5 flex items-center gap-3">
+                                 <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse shrink-0" />
+                                 <div className="flex-1 min-w-0">
+                                   <div className="flex items-center gap-2">
+                                     <span className="text-[10px] font-bold text-agent-teal truncate max-w-[180px]" title={meta.command}>{meta.command}</span>
+                                     <span className="text-[9px] text-[#858585] shrink-0 font-mono">{mm}:{ss}</span>
+                                   </div>
+                                   <div className="flex items-center gap-1.5 mt-0.5">
+                                     <Terminal size={9} className="text-[#858585] shrink-0" />
+                                     <span className="text-[9px] text-[#858585] truncate">{meta.tabTitle}</span>
+                                     {isExternal && <span className="text-[8px] px-1 rounded bg-orange-500/20 text-orange-400 font-bold uppercase">ext</span>}
+                                     <span className="text-[9px] text-[#444] ml-1 font-mono">id:{meta.sessionId.slice(0, 8)}</span>
+                                   </div>
+                                 </div>
+                                 <div className="flex items-center gap-1.5 shrink-0">
+                                   {!isExternal && (
+                                     <button
+                                       onClick={() => { setActiveTerminalTabId(meta.tabId); setActivePanelTab('terminal'); }}
+                                       className="text-[9px] px-2 py-0.5 rounded bg-vscode-blue/20 text-vscode-blue hover:bg-vscode-blue/40 font-bold uppercase tracking-wider transition-colors"
+                                     >Focus</button>
+                                   )}
+                                   <button
+                                     onClick={async () => { await killSession(meta.sessionId); if (meta.tabId === activeTerminalTabId) updateActiveTerminalOutput('^C'); }}
+                                     className="text-[9px] px-2 py-0.5 rounded bg-red-500/20 text-red-400 hover:bg-red-500/40 font-bold uppercase tracking-wider transition-colors"
+                                   >■ Kill</button>
+                                 </div>
+                               </div>
+                             );
+                           })}
+                         </div>
+                       )}
+                     </div>
+
+                     {/* ── Section 2: System listening ports ── */}
+                     <div>
+                       <div className="flex items-center justify-between mb-2">
+                         <span className="text-[10px] font-bold uppercase tracking-widest text-[#858585]">System Ports</span>
+                         <span className="text-[9px] text-[#444] italic">all TCP LISTENING — updates every 3s</span>
+                       </div>
+                       {systemPorts.length === 0 ? (
+                         <div className="flex items-center gap-2 px-3 py-2 rounded border border-white/5 bg-[#1a1a1a] text-[#555] text-[10px] italic">
+                           No listening ports detected
+                         </div>
+                       ) : (
+                         <div className="space-y-1">
+                           {systemPorts.map((p) => (
+                             <div key={`${p.pid}-${p.port}`} className="border border-white/8 rounded bg-[#16161e] px-3 py-2 flex items-center gap-3">
+                               <span className="w-1.5 h-1.5 rounded-full bg-sky-400 shrink-0" />
+                               <div className="flex-1 min-w-0 flex items-center gap-3">
+                                 <span className="text-[11px] font-bold text-sky-300 font-mono shrink-0">:{p.port}</span>
+                                 <span className="text-[10px] text-[#cccccc] truncate">{p.name}</span>
+                                 <span className="text-[9px] text-[#555] font-mono shrink-0">pid {p.pid}</span>
+                               </div>
+                               <button
+                                 onClick={async () => {
+                                   await fetch(`/api/system/kill/${p.pid}`, { method: 'POST' });
+                                   setSystemPorts(prev => prev.filter(x => x.pid !== p.pid));
+                                 }}
+                                 className="shrink-0 text-[9px] px-2 py-0.5 rounded bg-red-500/20 text-red-400 hover:bg-red-500/40 font-bold uppercase tracking-wider transition-colors"
+                                 title={`Kill PID ${p.pid}`}
+                               >
+                                 ■ Kill
+                               </button>
+                             </div>
+                           ))}
+                         </div>
+                       )}
+                     </div>
+
+                   </div>
+                 )}
+
                  {activePanelTab === "plsql_docs" && (
                    <div className="text-[#cccccc] text-xs leading-relaxed max-w-3xl prose prose-invert prose-sm">
                      <ReactMarkdown>{plsqlDocs || "*No documentation generated yet. Use the 'Document' tool in SQL mode.*"}</ReactMarkdown>
@@ -1968,7 +2511,7 @@ export default function App() {
         </div>
 
         {/* Right AI Chat Panel */}
-        <div className="w-[320px] bg-panel-bg border-l border-border-main flex flex-col shadow-2xl z-10 font-sans">
+        <div className="w-[560px] bg-panel-bg border-l border-border-main flex flex-col shadow-2xl z-10 font-sans">
           <div className="p-2 px-3 flex items-center justify-between border-b border-editor-bg bg-editor-bg select-none h-[38px]">
             <div className="flex items-center gap-2">
               <MessageSquare size={14} className="text-vscode-blue" />
@@ -2276,7 +2819,7 @@ export default function App() {
                         initial={{ opacity: 0, y: 10, scale: 0.95 }}
                         animate={{ opacity: 1, y: 0, scale: 1 }}
                         exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                        className="absolute bottom-full right-0 mb-3 w-[240px] bg-panel-bg border border-border-main rounded-lg shadow-[0_10px_30px_rgba(0,0,0,0.5)] overflow-hidden z-[100] text-left"
+                        className="absolute bottom-full right-0 mb-3 w-[300px] bg-panel-bg border border-border-main rounded-lg shadow-[0_10px_30px_rgba(0,0,0,0.5)] overflow-hidden z-[100] text-left"
                       >
                         <div className="p-2 border-b border-border-main flex items-center gap-2 bg-editor-bg">
                           <Search size={12} className="text-[#858585]" />
@@ -2412,7 +2955,34 @@ export default function App() {
           </div>
           <div className="flex items-center gap-1 cursor-pointer hover:bg-white/10 px-1.5 h-full">
              <Code2 size={12} />
-             <span>TypeScript JSX</span>
+             <span>{(() => {
+               if (!activeFile) return 'Plain Text';
+               const ext = activeFile.includes('.') ? activeFile.split('.').pop()?.toLowerCase() : '';
+               const labelMap: Record<string, string> = {
+                 ts: 'TypeScript', tsx: 'TypeScript JSX',
+                 js: 'JavaScript', jsx: 'JavaScript JSX', mjs: 'JavaScript', cjs: 'JavaScript',
+                 html: 'HTML', htm: 'HTML',
+                 css: 'CSS', scss: 'SCSS', sass: 'SCSS', less: 'Less',
+                 sql: 'SQL', hql: 'SQL', ddl: 'SQL', dml: 'SQL',
+                 py: 'Python', pyw: 'Python', pyi: 'Python',
+                 rs: 'Rust', go: 'Go',
+                 c: 'C', h: 'C Header', cpp: 'C++', cc: 'C++', cxx: 'C++', hpp: 'C++ Header',
+                 cs: 'C#', java: 'Java', kt: 'Kotlin', kts: 'Kotlin', swift: 'Swift',
+                 rb: 'Ruby', php: 'PHP', lua: 'Lua', r: 'R',
+                 sh: 'Shell', bash: 'Bash', zsh: 'Zsh', fish: 'Fish',
+                 ps1: 'PowerShell', psm1: 'PowerShell', psd1: 'PowerShell',
+                 bat: 'Batch', cmd: 'Batch',
+                 json: 'JSON', jsonc: 'JSON with Comments',
+                 yaml: 'YAML', yml: 'YAML',
+                 toml: 'TOML', xml: 'XML', svg: 'SVG', xsd: 'XSD',
+                 ini: 'INI', env: 'ENV', cfg: 'Config', conf: 'Config',
+                 md: 'Markdown', mdx: 'MDX',
+                 graphql: 'GraphQL', gql: 'GraphQL',
+                 dockerfile: 'Dockerfile',
+                 tf: 'Terraform', hcl: 'HCL',
+               };
+               return labelMap[ext ?? ''] ?? 'Plain Text';
+             })()}</span>
           </div>
         </div>
         <div className="flex items-center gap-4">
@@ -2499,9 +3069,9 @@ export default function App() {
                       isOpen={isCloneModalOpen} 
                       onClose={() => setIsCloneModalOpen(false)} 
                       onCloneSuccess={(path) => {
-                        updateActiveTerminalOutput(`✓ Successfully cloned into ${path}`);
-                        fetchFileTree();
-                        addTimelineEvent("command", `Cloned repository into ${path}`);
+                        setIsCloneModalOpen(false);
+                        openFolder(path);
+                        addTimelineEvent("command", `Opened project: ${path}`);
                       }} 
                     />
                     
@@ -2798,7 +3368,7 @@ function ModelConfigModal({ isOpen, onClose, models, setModels }: { isOpen: bool
   );
 }
 
-function SidebarIcon({ icon: Icon, active, onClick, className }: { icon: any, active?: boolean, onClick: () => void, className?: string }) {
+function SidebarIcon({ icon: Icon, active, onClick, className, label }: { icon: any, active?: boolean, onClick: () => void, className?: string, label?: string }) {
   return (
     <div 
       className={cn(
@@ -2807,11 +3377,15 @@ function SidebarIcon({ icon: Icon, active, onClick, className }: { icon: any, ac
       )}
       onClick={onClick}
     >
-      <Icon size={24} strokeWidth={1.5} />
+      <Icon size={24} strokeWidth={1.5} className={className} />
       {active && <div className="absolute left-0 top-0 bottom-0 w-[2px] bg-white rounded-r pointer-events-none" />}
-      <div className="absolute left-full ml-2 px-2 py-1 bg-panel-bg text-white text-[10px] rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50 border border-border-main uppercase tracking-widest font-bold">
-         {Icon.name}
-      </div>
+      {label && (
+        <div className="absolute left-full top-1/2 -translate-y-1/2 ml-3 px-2.5 py-1 bg-[#252526] text-white text-[10px] rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-[999] border border-white/10 uppercase tracking-widest font-bold">
+          {label}
+          {/* left arrow */}
+          <div className="absolute right-full top-1/2 -translate-y-1/2 border-4 border-transparent border-r-[#252526]" />
+        </div>
+      )}
     </div>
   );
 }
@@ -2944,15 +3518,19 @@ function TerminalLine({ content, searchQuery }: { content: string, searchQuery?:
   // Simple shell syntax highlighting
   const renderLine = (text: string) => {
     if (isCommand) {
-      const parts = text.split(" ");
+      const arrow = "➜ ";
+      const body = text.startsWith(arrow) ? text.slice(arrow.length) : text.slice(2);
+      const spaceIdx = body.indexOf(" ");
+      const cmdName = spaceIdx === -1 ? body : body.slice(0, spaceIdx);
+      const cmdArgs = spaceIdx === -1 ? "" : body.slice(spaceIdx); // includes leading space
       return (
         <span>
           <span className="text-agent-teal">➜ </span>
-          <span className="text-vscode-blue font-bold tracking-tight">
-            {highlightSearch(parts[1] || "")}
+          <span className="text-vscode-blue font-bold">
+            {highlightSearch(cmdName)}
           </span>
-          <span className="text-[#cccccc] opacity-80 pl-1">
-            {highlightSearch(parts.slice(2).join(" "))}
+          <span className="text-[#cccccc] opacity-80 whitespace-pre">
+            {highlightSearch(cmdArgs)}
           </span>
         </span>
       );

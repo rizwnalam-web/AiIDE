@@ -1,14 +1,81 @@
 {
-  "name": "react-example",
+  "name": "nexus-ai-editor",
+  "productName": "Nexus AI Editor",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
+  "main": "dist-electron/main.js",
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build",
     "preview": "vite preview",
-    "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "clean": "rm -rf dist dist-electron dist-server release",
+    "lint": "tsc --noEmit",
+    "electron:compile": "node build-electron.mjs",
+    "electron:dev": "npm run electron:compile && electron dist-electron/main.js",
+    "build:server": "node build-server.mjs",
+    "electron:build": "npm run build && npm run build:server && npm run electron:compile && electron-builder",
+    "electron:pack": "npm run build && npm run build:server && npm run electron:compile && electron-builder --dir",
+    "electron:build:nosign": "cross-env CSC_IDENTITY_AUTO_DISCOVERY=false WIN_CSC_LINK= npm run build && npm run build:server && npm run electron:compile && electron-builder --win --publish never",
+    "prep:winsign": "powershell -ExecutionPolicy Bypass -File scripts/prep-winsign-cache.ps1",
+    "electron:build:win": "npm run prep:winsign && npm run build && npm run build:server && npm run electron:compile && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --publish never"
+  },
+  "build": {
+    "appId": "com.nexus.aieditor",
+    "productName": "Nexus AI Editor",
+    "asar": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "dist-server/**",
+      "package.json"
+    ],
+    "win": {
+      "sign": null,
+      "signingHashAlgorithms": null,
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.developer-tools"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "Development"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
@@ -38,6 +105,10 @@
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "autoprefixer": "^10.4.21",
+    "cross-env": "^10.1.0",
+    "electron": "^34.5.8",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.24.2",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",

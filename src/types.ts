@@ -77,7 +77,7 @@ export interface TimelineEvent {
   };
 }
 
-export type ViewType = "files" | "search" | "chat" | "mcp" | "agents" | "collaboration" | "knowledge" | "timeline" | "palace" | "settings" | "git" | "extensions";
+export type ViewType = "files" | "search" | "chat" | "mcp" | "agents" | "collaboration" | "knowledge" | "timeline" | "palace" | "settings" | "git" | "extensions" | "setup";
 
 export interface Extension {
   id: string;
@@ -126,7 +126,15 @@ export interface DBConnection {
   status: "connected" | "disconnected";
 }
 
-export type PanelTab = "terminal" | "debug" | "output" | "plsql_docs" | "review_results" | "test_gen" | "profiler";
+export type PanelTab = "terminal" | "debug" | "output" | "sessions" | "plsql_docs" | "review_results" | "test_gen" | "profiler";
+
+export interface SessionMeta {
+  sessionId: string;
+  command: string;
+  startTime: number;
+  tabId: string;
+  tabTitle: string;
+}
 
 export interface TerminalTab {
   id: string;
@@ -134,6 +142,8 @@ export interface TerminalTab {
   output: string[];
   history: string[];
   cwd: string;
+  /** Session ID of the currently running process in this tab, if any. */
+  runningSessionId?: string;
 }
 
 export interface TriggerConfig {
