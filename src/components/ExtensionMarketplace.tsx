@@ -12,14 +12,15 @@ import {
   Globe,
   Loader2,
   AlertCircle,
-  MoreVertical
+  MoreVertical,
+  Github
 } from 'lucide-react';
 import { extensionService } from '../services/extensionService';
 import { Extension } from '../types';
 import { cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 
-export const ExtensionMarketplace: React.FC = () => {
+export const ExtensionMarketplace: React.FC<{ onCloneClick?: () => void }> = ({ onCloneClick }) => {
   const [activeTab, setActiveTab] = useState<'marketplace' | 'installed'>('marketplace');
   const [searchQuery, setSearchQuery] = useState('');
   const [extensions, setExtensions] = useState<Extension[]>([]);
@@ -86,10 +87,24 @@ export const ExtensionMarketplace: React.FC = () => {
     <div className="flex flex-col h-full bg-[#1e1e1e]">
       <div className="p-3 border-b border-white/5 bg-white/[0.02]">
         <div className="flex items-center justify-between mb-3">
-          <h3 className="text-[11px] font-bold uppercase tracking-widest text-[#858585]">Extensions</h3>
-          <button className="text-[#858585] hover:text-white transition-colors">
-            <MoreVertical size={14} />
-          </button>
+          <div className="flex items-center gap-2">
+            <h3 className="text-[11px] font-bold uppercase tracking-widest text-[#858585]">Extensions</h3>
+          </div>
+          <div className="flex items-center gap-1">
+            {onCloneClick && (
+              <button 
+                onClick={onCloneClick}
+                className="flex items-center gap-1.5 px-2 py-1 bg-vscode-blue hover:bg-[#11679a] text-white rounded text-[10px] font-bold transition-all shadow-sm active:scale-95"
+                title="Import/Clone Repository"
+              >
+                <Github size={12} />
+                <span>Clone Repo</span>
+              </button>
+            )}
+            <button className="text-[#858585] hover:text-white transition-colors p-1">
+              <MoreVertical size={14} />
+            </button>
+          </div>
         </div>
         
         <div className="relative mb-3">

@@ -1,6 +1,8 @@
 import { GoogleGenAI, Type, FunctionDeclaration } from "@google/genai";
+import { LLMModel } from "../types";
+import { MODELS } from "../constants";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+const defaultAi = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
 const readFileTool: FunctionDeclaration = {
   name: "read_file",
@@ -85,18 +87,30 @@ const insertCodeTool: FunctionDeclaration = {
   },
 };
 
-export async function* chatStream(messages: { role: string; content: string }[]) {
-  const model = "gemini-3.1-pro-preview";
+export async function* chatStream(messages: { role: string; content: string }[], modelConfig?: LLMModel) {
+  const config = modelConfig || MODELS[0];
+  // Map provided model IDs to actual Gemini model names if necessary
+  const modelName = config.id.toLowerCase().includes("gemini") ? config.id : "gemini-2.0-flash";
   
+  console.log(`[ChatStream] Using model: ${modelName} (${config.provider})`);
+  
+  // Use custom API key if provided, otherwise fallback to environment key
+  const ai = config.apiKey 
+    ? new GoogleGenAI({ apiKey: config.apiKey })
+    : defaultAi;
+
   const formattedMessages = messages.map(m => ({
     role: m.role === "assistant" ? "model" as const : "user" as const,
     parts: [{ text: m.content }]
   }));
 
   const chat = ai.chats.create({
-    model,
+    model: modelName,
     history: formattedMessages.slice(0, -1),
     config: {
+      temperature: config.temperature ?? 0.7,
+      maxOutputTokens: config.maxTokens ?? 2048,
+      topP: config.topP ?? 0.9,
       systemInstruction: `You are Nexus Agent, a world-class AI software engineer.
       
 Your goal is to help the user complete complex programming tasks autonomously.
@@ -153,7 +167,7 @@ Provide the NEXT few lines of code to complete the current thought.
 Output ONLY the code completion. Do not provide explanations. Keep it under 50 tokens.`;
 
   try {
-    const result = await ai.models.generateContent({
+    const result = await defaultAi.models.generateContent({
       model,
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       config: {
@@ -207,8 +221,8 @@ Requirements:
 Return both spec and body in one response, no markdown or explanations.`;
   }
 
-  const result = await ai.models.generateContent({
-    model: "gemini-3.1-pro-preview",
+  const result = await defaultAi.models.generateContent({
+    model: "gemini-1.5-pro",
     contents: [{ role: "user", parts: [{ text: `${systemPrompt}\n\nTask: ${description}` }] }],
     config: { temperature: 0.2 }
   });
@@ -251,8 +265,8 @@ Focus on:
 Return ONLY the refactored code block.`
   };
 
-  const result = await ai.models.generateContent({
-    model: "gemini-3.1-pro-preview",
+  const result = await defaultAi.models.generateContent({
+    model: "gemini-1.5-pro",
     contents: [{ role: "user", parts: [{ text: `${prompts[mode]}\n\nCode:\n${code}` }] }],
   });
   

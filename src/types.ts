@@ -1,3 +1,33 @@
+export interface GitCommit {
+  id: string;
+  hash: string;
+  message: string;
+  author: string;
+  date: string;
+  color: string;
+  branch?: string;
+  active?: boolean;
+  remote?: boolean;
+  type?: "info" | "commit";
+}
+
+export interface LLMModel {
+  id: string;
+  name: string;
+  provider: "Anthropic" | "OpenAI" | "Google" | "Meta";
+  tag?: string;
+  description: string;
+  contextSize: string;
+  speed: string;
+  costMultiplier: string;
+  isNew?: boolean;
+  discount?: string;
+  apiKey?: string;
+  temperature?: number;
+  maxTokens?: number;
+  topP?: number;
+}
+
 export interface FileNode {
   name: string;
   type: "file" | "directory";
@@ -42,6 +72,8 @@ export interface TimelineEvent {
     content?: string;
     command?: string;
     result?: string;
+    message?: string;
+    actionType?: string;
   };
 }
 

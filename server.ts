@@ -88,6 +88,100 @@ async function startServer() {
     }
   });
 
+  app.get("/api/git/branch", async (req, res) => {
+    try {
+      const { stdout } = await execPromise("git rev-parse --abbrev-ref HEAD", { cwd: process.cwd() });
+      res.json({ branch: stdout.trim() });
+    } catch (error) {
+      res.json({ branch: "unknown" });
+    }
+  });
+
+  app.post("/api/git/fetch", async (req, res) => {
+    try {
+      const { stdout } = await execPromise("git fetch", { cwd: process.cwd() });
+      res.json({ success: true, stdout });
+    } catch (error) {
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  app.post("/api/git/status", async (req, res) => {
+    try {
+      const { stdout } = await execPromise("git status --porcelain", { cwd: process.cwd() });
+      const files = stdout.split("\n").filter(line => line.trim()).map(line => {
+        const status = line.substring(0, 2).trim();
+        const path = line.substring(3).trim();
+        return { path, status };
+      });
+      res.json(files);
+    } catch (error) {
+       // If not a git repo, return empty but success
+      res.json([]);
+    }
+  });
+
+  app.post("/api/git/add", async (req, res) => {
+    const { filePath } = req.body;
+    try {
+      // Use child_process.spawn-like approach or sanitize
+      // For simplicity here, we'll use regex validation or escape
+      if (/[;&|]/.test(filePath)) {
+        return res.status(400).json({ error: "Invalid file path characters" });
+      }
+      await execPromise(`git add -- "${filePath}"`, { cwd: process.cwd() });
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  app.post("/api/git/reset", async (req, res) => {
+    const { filePath } = req.body;
+    try {
+      if (/[;&|]/.test(filePath)) {
+        return res.status(400).json({ error: "Invalid file path characters" });
+      }
+      await execPromise(`git reset -- "${filePath}"`, { cwd: process.cwd() });
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  app.post("/api/git/commit", async (req, res) => {
+    const { message } = req.body;
+    try {
+      // Escape single quotes for shell
+      const escapedMessage = message.replace(/'/g, "'\\''");
+      const { stdout } = await execPromise(`git commit -m '${escapedMessage}'`, { cwd: process.cwd() });
+      res.json({ success: true, stdout });
+    } catch (error) {
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  app.get("/api/git/log", async (req, res) => {
+    try {
+      const { stdout } = await execPromise('git log -n 20 --pretty=format:"%H|%an|%ar|%s"', { cwd: process.cwd() });
+      const commits = stdout.split("\n").filter(line => line.trim()).map(line => {
+        const [hash, author, date, message] = line.split("|");
+        return {
+          id: hash,
+          hash: hash.substring(0, 7),
+          author,
+          date,
+          message,
+          color: "#3b82f6", // Default color
+          active: false
+        };
+      });
+      res.json(commits);
+    } catch (error) {
+      res.json([]);
+    }
+  });
+
   app.post("/api/git/clone", async (req, res) => {
     const { cloneUrl, targetPath } = req.body;
     try {
