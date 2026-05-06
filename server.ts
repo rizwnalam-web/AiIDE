@@ -121,6 +121,143 @@ async function startServer() {
     }
   });
 
+  const CREDENTIALS_FILE = path.join(process.cwd(), 'git_credentials.json');
+
+  app.get("/api/git/credentials", async (req, res) => {
+    try {
+      const data = await fs.readFile(CREDENTIALS_FILE, "utf-8");
+      res.json(JSON.parse(data));
+    } catch (e: any) {
+      if (e.code === 'ENOENT') {
+        res.json({});
+      } else {
+        res.status(500).json({ error: e.message });
+      }
+    }
+  });
+
+  app.post("/api/git/credentials", async (req, res) => {
+    const { provider, token, username } = req.body;
+    try {
+      let existing: any = {};
+      try {
+        const data = await fs.readFile(CREDENTIALS_FILE, "utf-8");
+        existing = JSON.parse(data);
+      } catch (e) {}
+      
+      const updated = {
+        ...existing,
+        [provider]: { token, username }
+      };
+      
+      await fs.writeFile(CREDENTIALS_FILE, JSON.stringify(updated, null, 2), "utf-8");
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  const EXTENSIONS_FILE = path.join(process.cwd(), 'extensions.json');
+
+  app.get("/api/extensions", async (req, res) => {
+    try {
+      const data = await fs.readFile(EXTENSIONS_FILE, "utf-8");
+      res.json(JSON.parse(data));
+    } catch (e: any) {
+      if (e.code === 'ENOENT') {
+        res.json([]);
+      } else {
+        res.status(500).json({ error: e.message });
+      }
+    }
+  });
+
+  app.post("/api/extensions/install", async (req, res) => {
+    const extension = req.body;
+    try {
+      let existing: any[] = [];
+      try {
+        const data = await fs.readFile(EXTENSIONS_FILE, "utf-8");
+        existing = JSON.parse(data);
+      } catch (e) {}
+      
+      if (!existing.some(e => e.id === extension.id)) {
+        existing.push({ ...extension, installed: true, enabled: true });
+      }
+      
+      await fs.writeFile(EXTENSIONS_FILE, JSON.stringify(existing, null, 2), "utf-8");
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/extensions/uninstall", async (req, res) => {
+    const { id } = req.body;
+    try {
+      let existing: any[] = [];
+      try {
+        const data = await fs.readFile(EXTENSIONS_FILE, "utf-8");
+        existing = JSON.parse(data);
+      } catch (e) {}
+      
+      const filtered = existing.filter(e => e.id !== id);
+      await fs.writeFile(EXTENSIONS_FILE, JSON.stringify(filtered, null, 2), "utf-8");
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/extensions/toggle", async (req, res) => {
+    const { id, enabled } = req.body;
+    try {
+      let existing: any[] = [];
+      try {
+        const data = await fs.readFile(EXTENSIONS_FILE, "utf-8");
+        existing = JSON.parse(data);
+      } catch (e) {}
+      
+      const updated = existing.map(e => e.id === id ? { ...e, enabled } : e);
+      await fs.writeFile(EXTENSIONS_FILE, JSON.stringify(updated, null, 2), "utf-8");
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  const PACKAGE_JSON = path.join(process.cwd(), 'package.json');
+
+  app.get("/api/dependencies", async (req, res) => {
+    try {
+      const data = await fs.readFile(PACKAGE_JSON, "utf-8");
+      res.json(JSON.parse(data));
+    } catch (error) {
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  app.post("/api/dependencies/install", async (req, res) => {
+    const { name } = req.body;
+    try {
+      // In this environment, we can use the terminal logic to run npm install
+      const { stdout, stderr } = await execPromise(`npm install ${name}`);
+      res.json({ success: true, stdout, stderr });
+    } catch (error) {
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  app.post("/api/dependencies/uninstall", async (req, res) => {
+    const { name } = req.body;
+    try {
+      const { stdout, stderr } = await execPromise(`npm uninstall ${name}`);
+      res.json({ success: true, stdout, stderr });
+    } catch (error) {
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
   // MCP Simulation API
   app.get("/api/mcp/tools", async (req, res) => {
     // Mocking an MCP server providing database tools

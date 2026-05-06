@@ -138,6 +138,21 @@ class GitIntegrationService {
 
     return await response.json();
   }
+
+  async saveCredentials(auth: GitAuth): Promise<void> {
+    const response = await fetch('/api/git/credentials', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(auth)
+    });
+    if (!response.ok) throw new Error('Failed to save credentials');
+  }
+
+  async getSavedCredentials(): Promise<Record<GitProvider, Partial<GitAuth>>> {
+    const response = await fetch('/api/git/credentials');
+    if (!response.ok) throw new Error('Failed to fetch credentials');
+    return await response.json();
+  }
 }
 
 export const gitService = new GitIntegrationService();

@@ -43,9 +43,13 @@ export const CloneRepoModal: React.FC<CloneRepoModalProps> = ({ isOpen, onClose,
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [targetPath, setTargetPath] = useState('external-repos');
+  const [rememberMe, setRememberMe] = useState(true);
+  const [savedCredentials, setSavedCredentials] = useState<Record<string, Partial<GitAuth>>>({});
 
   useEffect(() => {
-    if (!isOpen) {
+    if (isOpen) {
+      gitService.getSavedCredentials().then(setSavedCredentials).catch(console.error);
+    } else {
       setStep('provider');
       setSelectedProvider(null);
       setAuth({});
@@ -57,7 +61,12 @@ export const CloneRepoModal: React.FC<CloneRepoModalProps> = ({ isOpen, onClose,
 
   const handleProviderSelect = (provider: GitProvider) => {
     setSelectedProvider(provider);
-    setAuth({ provider });
+    const saved = savedCredentials[provider];
+    if (saved) {
+      setAuth({ ...saved, provider });
+    } else {
+      setAuth({ provider });
+    }
     setStep('auth');
   };
 
@@ -73,6 +82,11 @@ export const CloneRepoModal: React.FC<CloneRepoModalProps> = ({ isOpen, onClose,
     try {
       const fetchedRepos = await gitService.listRepositories(auth as GitAuth);
       setRepos(fetchedRepos);
+      
+      if (rememberMe) {
+        await gitService.saveCredentials(auth as GitAuth);
+      }
+      
       setStep('repos');
     } catch (err: any) {
       setError(err.message || 'Authentication failed');
@@ -210,6 +224,16 @@ export const CloneRepoModal: React.FC<CloneRepoModalProps> = ({ isOpen, onClose,
                         />
                       </div>
                     )}
+
+                    <div className="flex items-center gap-3 py-2 cursor-pointer group" onClick={() => setRememberMe(!rememberMe)}>
+                      <div className={cn(
+                        "w-4 h-4 rounded border flex items-center justify-center transition-all",
+                        rememberMe ? "bg-vscode-blue border-vscode-blue text-white" : "border-white/20 group-hover:border-white/40"
+                      )}>
+                        {rememberMe && <Check size={10} strokeWidth={3} />}
+                      </div>
+                      <span className="text-xs text-[#858585] group-hover:text-[#cccccc] transition-colors">Securely save credentials on server</span>
+                    </div>
 
                     <button 
                       type="submit"

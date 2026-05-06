@@ -45,7 +45,22 @@ export interface TimelineEvent {
   };
 }
 
-export type ViewType = "files" | "search" | "chat" | "mcp" | "agents" | "collaboration" | "knowledge" | "timeline" | "palace" | "settings" | "git";
+export type ViewType = "files" | "search" | "chat" | "mcp" | "agents" | "collaboration" | "knowledge" | "timeline" | "palace" | "settings" | "git" | "extensions";
+
+export interface Extension {
+  id: string;
+  name: string;
+  publisher: string;
+  displayName: string;
+  description: string;
+  version: string;
+  icon?: string;
+  installed: boolean;
+  enabled: boolean;
+  category: "Language" | "Theme" | "Linter" | "Snippet" | "Other";
+  downloads?: number;
+  rating?: number;
+}
 
 export interface CollaborationSession {
   id: string;

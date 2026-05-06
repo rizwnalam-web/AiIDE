@@ -33,10 +33,13 @@ import {
   GitPullRequest,
   GitBranch,
   Gitlab,
-  Download
+  Download,
+  Puzzle
 } from "lucide-react";
 import { MemoryPalace } from "./components/MemoryPalace";
 import { CloneRepoModal } from "./components/CloneRepoModal";
+import { ExtensionMarketplace } from "./components/ExtensionMarketplace";
+import { DependencyExplorer } from "./components/DependencyExplorer";
 import { motion, AnimatePresence } from "motion/react";
 import Editor from "@monaco-editor/react";
 import ReactMarkdown from "react-markdown";
@@ -726,6 +729,7 @@ export default function App() {
           <SidebarIcon icon={Users} active={activeView === "collaboration"} onClick={() => setActiveView("collaboration")} />
           <SidebarIcon icon={Library} active={activeView === "knowledge"} onClick={() => setActiveView("knowledge")} />
           <SidebarIcon icon={Github} active={activeView === "git"} onClick={() => setActiveView("git")} />
+          <SidebarIcon icon={Puzzle} active={activeView === "extensions"} onClick={() => setActiveView("extensions")} />
           <SidebarIcon icon={History} active={activeView === "timeline"} onClick={() => setActiveView("timeline")} />
           <SidebarIcon icon={Building2} active={activeView === "palace"} onClick={() => setActiveView("palace")} />
           <SidebarIcon icon={Database} active={activeView === "mcp"} onClick={() => setActiveView("mcp")} />
@@ -1004,6 +1008,8 @@ export default function App() {
                     </div>
                   </div>
                 )}
+                {activeView === "extensions" && <ExtensionMarketplace />}
+                {activeView === "knowledge" && <DependencyExplorer />}
                 {activeView === "mcp" && (
                   <div className="flex flex-col h-full">
                     <div className="p-3 border-b border-border-main flex items-center justify-between">
