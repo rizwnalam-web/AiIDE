@@ -131,9 +131,9 @@ export const DependencyExplorer: React.FC = () => {
                 <RefreshCcw size={8} />
               </button>
             </div>
-            {dependencies.map((dep) => (
+            {dependencies.map((dep, idx) => (
               <div 
-                key={dep.name}
+                key={`${dep.name}-${dep.isDev ? 'dev' : 'prod'}-${idx}`}
                 className="group p-2 flex items-center justify-between rounded hover:bg-white/[0.02] border border-transparent hover:border-white/5 transition-all"
               >
                 <div className="flex items-center gap-3">

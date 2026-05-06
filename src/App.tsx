@@ -34,7 +34,8 @@ import {
   GitBranch,
   Gitlab,
   Download,
-  Puzzle
+  Puzzle,
+  Trash2
 } from "lucide-react";
 import { MemoryPalace } from "./components/MemoryPalace";
 import { CloneRepoModal } from "./components/CloneRepoModal";
@@ -71,6 +72,7 @@ import { useAgentMode } from "./services/AgentModeProvider";
 export default function App() {
   const [activeView, setActiveView] = useState<ViewType>("files");
   const [fileTree, setFileTree] = useState<FileNode[]>([]);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [openFiles, setOpenFiles] = useState<string[]>([]);
   const [activeFile, setActiveFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string>("");
@@ -109,10 +111,12 @@ export default function App() {
   const [evolutionStatus, setEvolutionStatus] = useState<"idle" | "analyzing" | "improving">("idle");
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
   const [isCloneModalOpen, setIsCloneModalOpen] = useState(false);
+  const [selectionMetadata, setSelectionMetadata] = useState<{ x: number, y: number, text: string, range: any } | null>(null);
+  const [currentDecorations, setCurrentDecorations] = useState<string[]>([]);
 
   const addTimelineEvent = (type: TimelineEvent["type"], description: string, metadata: TimelineEvent["metadata"] = {}) => {
     const newEvent: TimelineEvent = {
-      id: Math.random().toString(36).substr(2, 9),
+      id: `evt-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
       timestamp: new Date(),
       type,
       description,
@@ -223,6 +227,56 @@ export default function App() {
   const handleEditorDidMount = (editor: any, monaco: any) => {
     monacoRef.current = monaco;
     editorRef.current = editor;
+
+    editor.onDidChangeCursorSelection((e: any) => {
+      const selection = editor.getSelection();
+      if (selection && !selection.isEmpty()) {
+        const coords = editor.getScrolledVisiblePosition(selection.getEndPosition());
+        const editorElement = editor.getDomNode();
+        if (editorElement && coords) {
+          const rect = editorElement.getBoundingClientRect();
+          setSelectionMetadata({
+            x: rect.left + coords.left,
+            y: rect.top + coords.top - 40,
+            text: editor.getModel().getValueInRange(selection),
+            range: selection
+          });
+        }
+      } else {
+        setSelectionMetadata(null);
+      }
+    });
+
+    editor.onMouseDown(() => {
+      setSelectionMetadata(null);
+    });
+  };
+
+  const applyEditorStyle = (className: string) => {
+    if (!editorRef.current || !selectionMetadata) return;
+    
+    const editor = editorRef.current;
+    const range = selectionMetadata.range;
+    
+    const decoration = {
+      range: range,
+      options: {
+        inlineClassName: className,
+        hoverMessage: { value: `Applied style: ${className}` }
+      }
+    };
+    
+    // We add to existing decorations for this model
+    const newDecorations = editor.deltaDecorations(currentDecorations, [decoration]);
+    setCurrentDecorations(newDecorations);
+    setSelectionMetadata(null);
+  };
+
+  const clearEditorStyles = () => {
+    if (!editorRef.current) return;
+    editorRef.current.deltaDecorations(currentDecorations, []);
+    setCurrentDecorations([]);
+    setSelectionMetadata(null);
   };
 
   const fetchFileTree = async () => {
@@ -230,6 +284,12 @@ export default function App() {
       const res = await fetch("/api/files");
       const data = await res.json();
       setFileTree(data);
+      
+      // Auto-expand top-level folders
+      const topLevelDirs = data
+        .filter((node: FileNode) => node.type === "directory")
+        .map((node: FileNode) => node.path);
+      setExpandedFolders(new Set(topLevelDirs));
     } catch (err) {
       console.error("Failed to fetch files", err);
     }
@@ -677,7 +737,7 @@ export default function App() {
   };
 
   const addTerminalTab = () => {
-    const newId = `term-${Date.now()}`;
+    const newId = `term-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
     const newTab: TerminalTab = {
       id: newId,
       title: "zsh",
@@ -699,22 +759,48 @@ export default function App() {
     }
   };
 
-  const renderFileTree = (nodes: FileNode[]) => {
-    return nodes.map(node => (
-      <div key={node.path} className="pl-4">
-        <div 
-          className={cn(
-            "flex items-center gap-2 py-1 px-2 rounded cursor-pointer hover:bg-[#2a2d2e] select-none text-sm group",
-            activeFile === node.path && "bg-[#37373d]"
-          )}
-          onClick={() => node.type === "file" ? handleFileClick(node.path) : null}
-        >
-          {node.type === "directory" ? <ChevronDown size={14} className="text-gray-400" /> : <FileCode size={14} className="text-blue-400" />}
-          <span className="text-gray-300">{node.name}</span>
-        </div>
-        {node.children && <div className="ml-2 border-l border-gray-700/50">{renderFileTree(node.children)}</div>}
-      </div>
-    ));
+  const toggleFolder = (path: string) => {
+    setExpandedFolders(prev => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+
+  const renderFileTree = (nodes: FileNode[], level = 0) => {
+    return nodes
+      .sort((a, b) => {
+        if (a.type !== b.type) return a.type === "directory" ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      })
+      .map((node, idx) => {
+        const isExpanded = expandedFolders.has(node.path);
+        const isDirectory = node.type === "directory";
+
+        return (
+          <div key={`${node.path}-${idx}`}>
+            <div 
+              className={cn(
+                "flex items-center gap-1.5 py-1 px-2 cursor-pointer hover:bg-white/[0.05] select-none text-[11px] group transition-colors",
+                activeFile === node.path ? "bg-vscode-blue/20 text-white font-medium" : "text-[#cccccc]"
+              )}
+              style={{ paddingLeft: `${(level * 12) + 8}px` }}
+              onClick={() => isDirectory ? toggleFolder(node.path) : handleFileClick(node.path)}
+            >
+              {isDirectory ? (
+                isExpanded ? <ChevronDown size={14} className="text-[#858585]" /> : <ChevronRight size={14} className="text-[#858585]" />
+              ) : (
+                <FileCode size={14} className="text-vscode-blue/80 shrink-0" />
+              )}
+              <span className="truncate">{node.name}</span>
+            </div>
+            {isDirectory && isExpanded && node.children && (
+              <div>{renderFileTree(node.children, level + 1)}</div>
+            )}
+          </div>
+        );
+      });
   };
 
   return (
@@ -818,8 +904,8 @@ export default function App() {
                             <span>Evolution Proposals</span>
                             <span className="bg-vscode-blue/20 text-vscode-blue px-1.5 rounded-full text-[9px]">{proposals.filter(p => p.status === "pending").length}</span>
                           </div>
-                          {proposals.map(proposal => (
-                            <div key={proposal.id} className="p-3 bg-[#2a2d2e]/50 border border-white/5 rounded-lg space-y-2">
+                          {proposals.map((proposal, idx) => (
+                            <div key={`${proposal.id}-${idx}`} className="p-3 bg-[#2a2d2e]/50 border border-white/5 rounded-lg space-y-2">
                               <div className="flex items-center justify-between">
                                 <span className="text-[10px] font-bold text-white uppercase tracking-tight truncate max-w-[120px]">{proposal.filePath.split('/').pop()}</span>
                                 <span className={cn(
@@ -930,8 +1016,8 @@ export default function App() {
                       ) : (
                         <div className="space-y-4 relative ml-2 mt-2">
                            <div className="absolute left-0 top-0 bottom-0 w-[1px] bg-vscode-blue/20" />
-                           {timeline.map((event) => (
-                             <div key={event.id} className="relative pl-6 group">
+                           {timeline.map((event, idx) => (
+                             <div key={`${event.id}-${idx}`} className="relative pl-6 group">
                                 <div className="absolute left-[-4.5px] top-1.5 w-2 h-2 rounded-full bg-vscode-blue border border-activity-bg group-hover:scale-150 transition-all shadow-[0_0_8px_rgba(0,122,204,0.4)]" />
                                 <div className="text-[9px] text-[#555] mb-0.5 uppercase flex items-center justify-between font-bold">
                                    <span>{event.type.replace('_', ' ')}</span>
@@ -1054,9 +1140,9 @@ export default function App() {
                 <Menu size={16} />
               </button>
             )}
-            {openFiles.map(file => (
+            {openFiles.map((file, idx) => (
               <div 
-                key={file}
+                key={`${file}-${idx}`}
                 className={cn(
                   "px-3 h-full flex items-center gap-2 text-[12px] border-r border-editor-bg cursor-pointer min-w-[120px] max-w-[200px] bg-panel-bg hover:bg-[#2a2d2e] group transition-colors",
                   activeFile === file && "bg-editor-bg text-white border-t border-vscode-blue"
@@ -1143,9 +1229,9 @@ export default function App() {
               {/* Terminal Tabs Bar */}
               {activePanelTab === "terminal" && (
                 <div className="flex items-center bg-[#181818] border-b border-white/5 h-[30px] px-2 gap-1 overflow-x-auto custom-scrollbar">
-                  {terminalTabs.map(tab => (
+                  {terminalTabs.map((tab, idx) => (
                     <div 
-                      key={tab.id}
+                      key={`${tab.id}-${idx}`}
                       onClick={() => setActiveTerminalTabId(tab.id)}
                       className={cn(
                         "flex items-center gap-2 px-3 h-[24px] rounded-t text-[10px] cursor-pointer transition-all border-t-2",
@@ -1297,7 +1383,7 @@ export default function App() {
               </div>
             )}
             {chatMessages.map((msg, i) => (
-              <div key={i} className={cn("flex flex-col gap-1", msg.role === "user" ? "items-end" : "items-start")}>
+              <div key={`${msg.role}-${i}`} className={cn("flex flex-col gap-1", msg.role === "user" ? "items-end" : "items-start")}>
                 <div className={cn(
                   "max-w-[95%] p-3 text-[12px] rounded border leading-relaxed",
                   msg.role === "user" ? "bg-vscode-blue/10 border-vscode-blue/20 text-[#cccccc] rounded-tr-none" : "bg-editor-bg text-[#cccccc] border-border-main rounded-tl-none shadow-md"
@@ -1347,8 +1433,8 @@ export default function App() {
                           </button>
                         )}
                       </div>
-                      {msg.actions.map(action => (
-                        <div key={action.id} className="p-2 bg-[#2a2d2e] rounded border border-white/5 flex flex-col gap-2">
+                      {msg.actions.map((action, ai) => (
+                        <div key={`${action.id}-${ai}`} className="p-2 bg-[#2a2d2e] rounded border border-white/5 flex flex-col gap-2">
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2">
                               <div className="p-1 bg-white/5 rounded text-agent-teal">
@@ -1563,6 +1649,54 @@ export default function App() {
             addTimelineEvent("command", `Cloned repository into ${path}`);
           }} 
         />
+
+        {/* Inline Styling Toolbar */}
+        <AnimatePresence>
+          {selectionMetadata && (
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.9 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.9 }}
+              className="fixed z-[1000] flex items-center gap-1 p-1 bg-[#252526] border border-[#3c3c3c] rounded-lg shadow-2xl overflow-hidden"
+              style={{ left: selectionMetadata.x, top: selectionMetadata.y }}
+            >
+              <button 
+                onClick={() => applyEditorStyle('monaco-bold')}
+                className="p-1.5 hover:bg-[#37373d] rounded text-[#cccccc] hover:text-white transition-colors flex flex-col items-center gap-0.5"
+                title="Bold"
+              >
+                <div className="font-bold text-xs px-1">B</div>
+              </button>
+              <button 
+                onClick={() => applyEditorStyle('monaco-italic')}
+                className="p-1.5 hover:bg-[#37373d] rounded text-[#cccccc] hover:text-white transition-colors"
+                title="Italic"
+              >
+                <div className="italic text-xs px-1 font-serif">I</div>
+              </button>
+              <div className="w-[1px] h-4 bg-white/10 mx-1" />
+              <button onClick={() => applyEditorStyle('monaco-red')} className="w-4 h-4 rounded-full bg-red-500 border border-black/20 hover:scale-110 transition-transform" />
+              <button onClick={() => applyEditorStyle('monaco-blue')} className="w-4 h-4 rounded-full bg-blue-500 border border-black/20 hover:scale-110 transition-transform" />
+              <button onClick={() => applyEditorStyle('monaco-green')} className="w-4 h-4 rounded-full bg-green-500 border border-black/20 hover:scale-110 transition-transform" />
+              <button onClick={() => applyEditorStyle('monaco-yellow')} className="w-4 h-4 rounded-full bg-yellow-500 border border-black/20 hover:scale-110 transition-transform" />
+              <div className="w-[1px] h-4 bg-white/10 mx-1" />
+              <button 
+                onClick={() => applyEditorStyle('monaco-highlight')}
+                className="p-1.5 hover:bg-[#37373d] rounded text-vscode-blue transition-colors"
+                title="Highlight"
+              >
+                <Zap size={14} />
+              </button>
+              <button 
+                onClick={clearEditorStyles}
+                className="p-1.5 hover:bg-red-500/10 rounded text-red-400 transition-colors"
+                title="Clear All Styles"
+              >
+                <Trash2 size={14} />
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </AnimatePresence>
     </div>
   );

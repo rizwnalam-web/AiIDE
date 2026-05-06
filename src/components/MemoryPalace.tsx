@@ -76,9 +76,9 @@ const District: React.FC<{ node: FileNode; position: [number, number, number]; d
         const z = Math.sin(angle) * radius;
         
         if (child.type === 'directory') {
-          return <District key={child.path} node={child} position={[x, 0, z]} depth={depth + 1} onSelect={onSelect} />;
+          return <District key={`${child.path}-${i}`} node={child} position={[x, 0, z]} depth={depth + 1} onSelect={onSelect} />;
         } else {
-          return <Building key={child.path} node={child} position={[x, 0, z]} depth={depth + 1} onSelect={onSelect} />;
+          return <Building key={`${child.path}-${i}`} node={child} position={[x, 0, z]} depth={depth + 1} onSelect={onSelect} />;
         }
       })}
     </group>

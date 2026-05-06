@@ -133,9 +133,9 @@ export const ExtensionMarketplace: React.FC = () => {
           </div>
         ) : extensions.length > 0 ? (
           <div className="space-y-1">
-            {extensions.map(ext => (
+            {extensions.map((ext, idx) => (
               <div 
-                key={ext.id}
+                key={`${ext.id}-${idx}`}
                 className="group p-2 rounded hover:bg-white/[0.03] transition-all border border-transparent hover:border-white/5 flex gap-3"
               >
                 <div className="w-10 h-10 rounded bg-white/5 flex items-center justify-center shrink-0 border border-white/10 group-hover:border-white/20 transition-all">

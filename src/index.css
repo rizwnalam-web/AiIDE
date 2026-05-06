@@ -21,6 +21,15 @@
   --color-syntax-comment: #6a9955;
 }
 
+/* Monaco Inline Styling Decorations */
+.monaco-bold { font-weight: bold !important; }
+.monaco-italic { font-style: italic !important; }
+.monaco-red { color: #f87171 !important; }
+.monaco-blue { color: #60a5fa !important; }
+.monaco-green { color: #4ade80 !important; }
+.monaco-yellow { color: #fbbf24 !important; }
+.monaco-highlight { background-color: rgba(0, 122, 204, 0.2) !important; border-bottom: 1px solid #007acc; }
+
 @layer base {
   body {
     @apply bg-editor-bg text-[#cccccc] font-sans text-[12px] antialiased;
