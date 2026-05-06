@@ -35,7 +35,14 @@ import {
   Gitlab,
   Download,
   Puzzle,
-  Trash2
+  Trash2,
+  MoreHorizontal,
+  Book,
+  RefreshCw,
+  RotateCw,
+  Workflow,
+  ExternalLink,
+  ChevronUp
 } from "lucide-react";
 import { MemoryPalace } from "./components/MemoryPalace";
 import { CloneRepoModal } from "./components/CloneRepoModal";
@@ -71,6 +78,21 @@ import { useAgentMode } from "./services/AgentModeProvider";
 
 export default function App() {
   const [activeView, setActiveView] = useState<ViewType>("files");
+  const [knowledgeActionTab, setKnowledgeActionTab] = useState<"docs" | "deps">("docs");
+  const [gitSections, setGitSections] = useState({
+    repositories: true,
+    staged: true,
+    changes: true,
+    graph: true
+  });
+  const [commitMessage, setCommitMessage] = useState("");
+  const [changedFiles, setChangedFiles] = useState([
+    { path: 'src/App.tsx', status: 'M' },
+    { path: 'src/services/gitService.ts', status: 'M' },
+    { path: 'package.json', status: 'M' },
+    { path: 'public/index.html', status: 'U' }
+  ]);
+  const [stagedFiles, setStagedFiles] = useState<{path: string, status: string}[]>([]);
   const [fileTree, setFileTree] = useState<FileNode[]>([]);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [openFiles, setOpenFiles] = useState<string[]>([]);
@@ -282,6 +304,7 @@ export default function App() {
   const fetchFileTree = async () => {
     try {
       const res = await fetch("/api/files");
+      if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
       const data = await res.json();
       setFileTree(data);
       
@@ -359,10 +382,10 @@ export default function App() {
       const res = await fetch("/api/write-file", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: proposal.filePath, content: proposal.diff })
+        body: JSON.stringify({ filePath: proposal.filePath, content: proposal.diff })
       });
 
-      if (!res.ok) throw new Error("Failed to apply refactoring");
+      if (!res.ok) throw new Error(`Failed to apply refactoring: ${res.statusText}`);
 
       setProposals(prev => prev.map(p => p.id === proposal.id ? { ...p, status: "applied" } : p));
       setFileContent(proposal.diff);
@@ -397,21 +420,24 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filePath })
       });
+      if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
       const data = await res.json();
       setFileContent(data.content);
     } catch (err) {
       console.error("Failed to read file", err);
+      updateActiveTerminalOutput(`Error reading file: ${(err as Error).message}`);
     }
   };
 
   const handleSave = async () => {
     if (!activeFile) return;
     try {
-      await fetch("/api/write-file", {
+      const res = await fetch("/api/write-file", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filePath: activeFile, content: fileContent })
       });
+      if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
       updateActiveTerminalOutput(`Saved ${activeFile}`);
       addTimelineEvent("file_change", `Saved ${activeFile}`, { path: activeFile, content: fileContent });
     } catch (err) {
@@ -721,19 +747,20 @@ export default function App() {
       return tab;
     }));
 
-    try {
-      const res = await fetch("/api/terminal", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ command: cmd })
-      });
-      const data = await res.json();
-      if (data.stdout) updateActiveTerminalOutput(data.stdout);
-      if (data.stderr) updateActiveTerminalOutput(`Error: ${data.stderr}`);
-      addTimelineEvent("command", `Executed: ${cmd}`, { command: cmd, result: data.stdout || data.stderr });
-    } catch (err) {
-      updateActiveTerminalOutput(`Failed: ${err}`);
-    }
+      try {
+        const res = await fetch("/api/terminal", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ command: cmd })
+        });
+        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+        const data = await res.json();
+        if (data.stdout) updateActiveTerminalOutput(data.stdout);
+        if (data.stderr) updateActiveTerminalOutput(`Error: ${data.stderr}`);
+        addTimelineEvent("command", `Executed: ${cmd}`, { command: cmd, result: data.stdout || data.stderr });
+      } catch (err) {
+        updateActiveTerminalOutput(`Failed: ${(err as Error).message}`);
+      }
   };
 
   const addTerminalTab = () => {
@@ -774,12 +801,12 @@ export default function App() {
         if (a.type !== b.type) return a.type === "directory" ? -1 : 1;
         return a.name.localeCompare(b.name);
       })
-      .map((node, idx) => {
+      .map((node) => {
         const isExpanded = expandedFolders.has(node.path);
         const isDirectory = node.type === "directory";
 
         return (
-          <div key={`${node.path}-${idx}`}>
+          <div key={`tree-node-${node.path}`}>
             <div 
               className={cn(
                 "flex items-center gap-1.5 py-1 px-2 cursor-pointer hover:bg-white/[0.05] select-none text-[11px] group transition-colors",
@@ -808,20 +835,20 @@ export default function App() {
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar - Rails (Activity Bar) */}
         <div className="w-[48px] bg-activity-bg flex flex-col items-center py-3 gap-5 border-r border-border-dark">
-          <SidebarIcon icon={FileCode} active={activeView === "files"} onClick={() => setActiveView("files")} />
-          <SidebarIcon icon={Search} active={activeView === "search"} onClick={() => setActiveView("search")} />
-          <SidebarIcon icon={MessageSquare} active={activeView === "chat"} onClick={() => setActiveView("chat")} />
-          <SidebarIcon icon={BrainCog} active={activeView === "agents"} onClick={() => setActiveView("agents")} />
-          <SidebarIcon icon={Users} active={activeView === "collaboration"} onClick={() => setActiveView("collaboration")} />
-          <SidebarIcon icon={Library} active={activeView === "knowledge"} onClick={() => setActiveView("knowledge")} />
-          <SidebarIcon icon={Github} active={activeView === "git"} onClick={() => setActiveView("git")} />
-          <SidebarIcon icon={Puzzle} active={activeView === "extensions"} onClick={() => setActiveView("extensions")} />
-          <SidebarIcon icon={History} active={activeView === "timeline"} onClick={() => setActiveView("timeline")} />
-          <SidebarIcon icon={Building2} active={activeView === "palace"} onClick={() => setActiveView("palace")} />
-          <SidebarIcon icon={Database} active={activeView === "mcp"} onClick={() => setActiveView("mcp")} />
+          <SidebarIcon key="view-files" icon={FileCode} active={activeView === "files"} onClick={() => setActiveView("files")} />
+          <SidebarIcon key="view-search" icon={Search} active={activeView === "search"} onClick={() => setActiveView("search")} />
+          <SidebarIcon key="view-chat" icon={MessageSquare} active={activeView === "chat"} onClick={() => setActiveView("chat")} />
+          <SidebarIcon key="view-agents" icon={BrainCog} active={activeView === "agents"} onClick={() => setActiveView("agents")} />
+          <SidebarIcon key="view-collaboration" icon={Users} active={activeView === "collaboration"} onClick={() => setActiveView("collaboration")} />
+          <SidebarIcon key="view-knowledge" icon={Library} active={activeView === "knowledge"} onClick={() => setActiveView("knowledge")} />
+          <SidebarIcon key="view-git" icon={Github} active={activeView === "git"} onClick={() => setActiveView("git")} />
+          <SidebarIcon key="view-extensions" icon={Puzzle} active={activeView === "extensions"} onClick={() => setActiveView("extensions")} />
+          <SidebarIcon key="view-timeline" icon={History} active={activeView === "timeline"} onClick={() => setActiveView("timeline")} />
+          <SidebarIcon key="view-palace" icon={Building2} active={activeView === "palace"} onClick={() => setActiveView("palace")} />
+          <SidebarIcon key="view-mcp" icon={Database} active={activeView === "mcp"} onClick={() => setActiveView("mcp")} />
           <div className="mt-auto pb-3 flex flex-col gap-5">
-            <SidebarIcon icon={Mic} active={isRecording} onClick={() => setIsRecording(!isRecording)} className={isRecording ? "text-red-500 animate-pulse" : ""} />
-            <SidebarIcon icon={Settings} active={activeView === "settings"} onClick={() => setActiveView("settings")} />
+            <SidebarIcon key="action-record" icon={Mic} active={isRecording} onClick={() => setIsRecording(!isRecording)} className={isRecording ? "text-red-500 animate-pulse" : ""} />
+            <SidebarIcon key="view-settings" icon={Settings} active={activeView === "settings"} onClick={() => setActiveView("settings")} />
           </div>
         </div>
 
@@ -904,8 +931,8 @@ export default function App() {
                             <span>Evolution Proposals</span>
                             <span className="bg-vscode-blue/20 text-vscode-blue px-1.5 rounded-full text-[9px]">{proposals.filter(p => p.status === "pending").length}</span>
                           </div>
-                          {proposals.map((proposal, idx) => (
-                            <div key={`${proposal.id}-${idx}`} className="p-3 bg-[#2a2d2e]/50 border border-white/5 rounded-lg space-y-2">
+                          {proposals.map((proposal) => (
+                            <div key={`evolution-proposal-${proposal.id}`} className="p-3 bg-[#2a2d2e]/50 border border-white/5 rounded-lg space-y-2">
                               <div className="flex items-center justify-between">
                                 <span className="text-[10px] font-bold text-white uppercase tracking-tight truncate max-w-[120px]">{proposal.filePath.split('/').pop()}</span>
                                 <span className={cn(
@@ -990,15 +1017,43 @@ export default function App() {
                   </div>
                 )}
                 {activeView === "knowledge" && (
-                  <div className="flex flex-col h-full p-4 space-y-4">
-                    <h3 className="text-[11px] font-bold uppercase tracking-widest text-[#858585]">Knowledge Base</h3>
-                    <div className="border border-dashed border-white/10 rounded-lg p-6 flex flex-col items-center justify-center gap-3 hover:bg-white/5 transition-all cursor-pointer">
-                       <Upload size={24} className="text-gray-500" />
-                       <span className="text-[10px] font-bold uppercase text-gray-500">Drop documentation</span>
+                  <div className="flex flex-col h-full bg-[#1e1e1e]">
+                    <div className="flex border-b border-white/5">
+                      <button 
+                        onClick={() => setKnowledgeActionTab("docs")}
+                        className={cn(
+                          "flex-1 py-3 text-[10px] font-bold uppercase tracking-wider transition-all border-b-2",
+                          knowledgeActionTab === "docs" ? "text-white border-vscode-blue bg-white/5" : "text-[#858585] border-transparent hover:text-white"
+                        )}
+                      >
+                        Grounding Docs
+                      </button>
+                      <button 
+                        onClick={() => setKnowledgeActionTab("deps")}
+                        className={cn(
+                          "flex-1 py-3 text-[10px] font-bold uppercase tracking-wider transition-all border-b-2",
+                          knowledgeActionTab === "deps" ? "text-white border-vscode-blue bg-white/5" : "text-[#858585] border-transparent hover:text-white"
+                        )}
+                      >
+                        Dependencies
+                      </button>
                     </div>
-                    <div className="space-y-2">
-                       <div className="text-[10px] text-gray-500 font-bold uppercase mb-2">Documents</div>
-                       <p className="text-[10px] text-gray-600 italic">No documents uploaded yet. Upload PDFs or MD files to ground the AI.</p>
+                    <div className="flex-1 overflow-hidden">
+                      {knowledgeActionTab === "docs" ? (
+                        <div className="flex flex-col h-full p-4 space-y-4">
+                          <h3 className="text-[11px] font-bold uppercase tracking-widest text-[#858585]">Knowledge Base</h3>
+                          <div className="border border-dashed border-white/10 rounded-lg p-6 flex flex-col items-center justify-center gap-3 hover:bg-white/5 transition-all cursor-pointer">
+                            <Upload size={24} className="text-gray-500" />
+                            <span className="text-[10px] font-bold uppercase text-gray-500">Drop documentation</span>
+                          </div>
+                          <div className="space-y-2">
+                            <div className="text-[10px] text-gray-500 font-bold uppercase mb-2">Documents</div>
+                            <p className="text-[10px] text-gray-600 italic">No documents uploaded yet. Upload PDFs or MD files to ground the AI.</p>
+                          </div>
+                        </div>
+                      ) : (
+                        <DependencyExplorer />
+                      )}
                     </div>
                   </div>
                 )}
@@ -1016,8 +1071,8 @@ export default function App() {
                       ) : (
                         <div className="space-y-4 relative ml-2 mt-2">
                            <div className="absolute left-0 top-0 bottom-0 w-[1px] bg-vscode-blue/20" />
-                           {timeline.map((event, idx) => (
-                             <div key={`${event.id}-${idx}`} className="relative pl-6 group">
+                           {timeline.map((event) => (
+                             <div key={`timeline-event-${event.id}`} className="relative pl-6 group">
                                 <div className="absolute left-[-4.5px] top-1.5 w-2 h-2 rounded-full bg-vscode-blue border border-activity-bg group-hover:scale-150 transition-all shadow-[0_0_8px_rgba(0,122,204,0.4)]" />
                                 <div className="text-[9px] text-[#555] mb-0.5 uppercase flex items-center justify-between font-bold">
                                    <span>{event.type.replace('_', ' ')}</span>
@@ -1048,54 +1103,156 @@ export default function App() {
                    </div>
                 )}
                 {activeView === "git" && (
-                  <div className="flex flex-col h-full bg-[#1e1e1e]">
-                    <div className="p-3 border-b border-white/5 bg-white/[0.02]">
-                      <h3 className="text-[11px] font-bold uppercase tracking-widest text-[#858585]">Source Control</h3>
+                  <div className="flex flex-col h-full bg-activity-bg select-none">
+                    <div className="p-2.5 flex items-center justify-between">
+                      <h3 className="text-[10px] font-bold uppercase tracking-wider text-[#bbbbbb]">Source Control</h3>
+                      <button className="p-1 hover:bg-white/5 rounded transition-colors text-[#858585] hover:text-white">
+                        <MoreHorizontal size={14} />
+                      </button>
                     </div>
-                    <div className="p-4 space-y-6">
-                      <div className="space-y-3">
-                        <p className="text-[11px] text-gray-400 leading-relaxed uppercase font-bold tracking-tight">Cloning & Imports</p>
-                        <button 
-                          onClick={() => setIsCloneModalOpen(true)}
-                          className="w-full py-2.5 bg-vscode-blue hover:bg-vscode-blue/80 text-white rounded-lg text-[11px] font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-vscode-blue/10 font-sans"
+
+                    <div className="flex-1 overflow-y-auto custom-scrollbar">
+                      {/* Repositories Section */}
+                      <div className="border-t border-white/5">
+                        <div 
+                          onClick={() => setGitSections(s => ({ ...s, repositories: !s.repositories }))}
+                          className="flex items-center gap-1 p-1 hover:bg-white/5 cursor-pointer group"
                         >
-                          <Download size={14} />
-                          CLONE REPOSITORY
-                        </button>
-                        <div className="grid grid-cols-2 gap-2">
-                           <button onClick={() => setIsCloneModalOpen(true)} className="py-2 bg-white/5 hover:bg-white/10 text-white rounded text-[10px] font-bold transition-all flex items-center justify-center gap-2 font-sans uppercase">
-                             <Github size={12} />
-                             GITHUB
-                           </button>
-                           <button onClick={() => setIsCloneModalOpen(true)} className="py-2 bg-white/5 hover:bg-white/10 text-white rounded text-[10px] font-bold transition-all flex items-center justify-center gap-2 font-sans uppercase">
-                             <Gitlab size={12} />
-                             GITLAB
-                           </button>
+                          <ChevronDown size={14} className={cn("text-[#858585] transition-transform", !gitSections.repositories && "-rotate-90")} />
+                          <span className="text-[10px] font-bold uppercase text-[#bbbbbb]">Repositories</span>
                         </div>
+                        {gitSections.repositories && (
+                          <div className="pl-6 py-1 pr-2 space-y-1">
+                            <div className="flex items-center gap-2 py-1 px-2 hover:bg-vscode-blue/10 rounded cursor-pointer group">
+                              <Book size={14} className="text-[#858585]" />
+                              <span className="text-[12px] text-white">autumn</span>
+                              <div className="ml-auto flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <div className="flex items-center gap-1 text-[10px] text-[#858585]">
+                                  <GitBranch size={12} />
+                                  <span>develop</span>
+                                </div>
+                                <div className="flex items-center gap-1 text-[10px] text-[#858585]">
+                                   <RefreshCw size={10} />
+                                   <span>5↓ 0↑</span>
+                                </div>
+                                <MoreHorizontal size={12} className="text-[#858585]" />
+                              </div>
+                            </div>
+                          </div>
+                        )}
                       </div>
 
-                      <div className="space-y-3">
-                         <p className="text-[11px] text-gray-400 leading-relaxed uppercase font-bold tracking-tight">Active Repository</p>
-                         <div className="p-3 bg-black/20 rounded border border-white/5">
-                            <div className="flex items-center gap-2 mb-2">
-                               <GitBranch size={12} className="text-vscode-blue" />
-                               <span className="text-xs font-medium text-white uppercase tracking-tighter">main</span>
-                               <span className="ml-auto text-[10px] text-gray-500 font-mono">dirty</span>
+                      {/* Staged Changes Section */}
+                      <div className="border-t border-white/5">
+                        <div 
+                          onClick={() => setGitSections(s => ({ ...s, staged: !s.staged }))}
+                          className="flex items-center gap-1 p-1 hover:bg-white/5 cursor-pointer group"
+                        >
+                          <ChevronDown size={14} className={cn("text-[#bbbbbb] transition-transform", !gitSections.staged && "-rotate-90")} />
+                          <span className="text-[10px] font-bold uppercase text-[#bbbbbb]">Staged Changes</span>
+                          <span className="ml-auto pr-2 text-[10px] text-[#858585]">{stagedFiles.length}</span>
+                        </div>
+                        {gitSections.staged && stagedFiles.length > 0 && (
+                          <div className="py-1">
+                            {stagedFiles.map((file) => (
+                              <div key={`staged-${file.path}`} className="flex items-center gap-2 px-6 py-1 hover:bg-white/5 group/file cursor-pointer">
+                                <FileCode size={14} className="text-vscode-blue" />
+                                <span className="text-[12px] text-[#cccccc] truncate flex-1">{file.path}</span>
+                                <div className="flex items-center gap-1 opacity-0 group-hover/file:opacity-100 transition-opacity">
+                                  <button 
+                                    onClick={(e) => { e.stopPropagation(); setStagedFiles(prev => prev.filter(f => f.path !== file.path)); setChangedFiles(prev => [...prev, file]) }}
+                                    className="p-0.5 hover:bg-white/10 rounded" title="Unstage Changes"
+                                  >
+                                    <Minus size={12} className="text-[#858585]" />
+                                  </button>
+                                </div>
+                                <span className="text-[10px] font-bold text-vscode-blue ml-2 w-3 text-center">{file.status}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Changes Section */}
+                      <div className="border-t border-white/5">
+                        <div 
+                          onClick={() => setGitSections(s => ({ ...s, changes: !s.changes }))}
+                          className="flex items-center gap-1 p-1 hover:bg-white/5 cursor-pointer group"
+                        >
+                          <ChevronDown size={14} className={cn("text-[#bbbbbb] transition-transform", !gitSections.changes && "-rotate-90")} />
+                          <span className="text-[10px] font-bold uppercase text-[#bbbbbb]">Changes</span>
+                          <span className="ml-auto pr-2 text-[10px] text-[#858585]">{changedFiles.length}</span>
+                        </div>
+                        {gitSections.changes && (
+                          <div className="space-y-1">
+                            <div className="px-3 py-2 space-y-3">
+                              <div className="relative group/commit">
+                                <textarea 
+                                  value={commitMessage}
+                                  onChange={(e) => setCommitMessage(e.target.value)}
+                                  placeholder="Message (Ctrl+Enter to commit on 'develop')"
+                                  className="w-full bg-[#1e1e1e] border border-white/10 rounded p-2 text-[12px] text-white focus:outline-none focus:border-vscode-blue min-h-[60px] resize-none custom-scrollbar placeholder:text-gray-600"
+                                />
+                                <div className="absolute right-2 bottom-2 text-[#858585]">
+                                  <Workflow size={12} />
+                                </div>
+                              </div>
+                              <button className="w-full h-8 bg-vscode-blue hover:bg-[#11679a] text-white flex items-center justify-center gap-2 text-[12px] rounded transition-colors font-medium">
+                                <RefreshCw size={14} />
+                                Sync Changes {stagedFiles.length > 0 ? stagedFiles.length : 5}↓
+                              </button>
                             </div>
-                            <div className="text-[10px] text-[#858585] flex items-center gap-2 italic">
-                               <AlertCircle size={10} />
-                               4 files pending sync
+                            
+                            <div className="py-1">
+                              {changedFiles.map((file) => (
+                                <div key={`changed-${file.path}`} className="flex items-center gap-2 px-6 py-1 hover:bg-white/5 group/file cursor-pointer">
+                                  <FileCode size={14} className="text-gray-500" />
+                                  <span className="text-[12px] text-[#cccccc] truncate flex-1">{file.path}</span>
+                                  <div className="flex items-center gap-1 opacity-0 group-hover/file:opacity-100 transition-opacity">
+                                    <button 
+                                      onClick={(e) => { e.stopPropagation(); setChangedFiles(prev => prev.filter(f => f.path !== file.path)); setStagedFiles(prev => [...prev, file]) }}
+                                      className="p-0.5 hover:bg-white/10 rounded" title="Stage Changes"
+                                    >
+                                      <Plus size={12} className="text-[#858585]" />
+                                    </button>
+                                  </div>
+                                  <span className={cn(
+                                    "text-[10px] font-bold ml-2 w-3 text-center",
+                                    file.status === 'M' ? "text-orange-400" : "text-green-400"
+                                  )}>{file.status}</span>
+                                </div>
+                              ))}
                             </div>
-                         </div>
-                         <button className="w-full py-2 bg-white/5 hover:bg-white/10 text-[#cccccc] hover:text-white rounded text-[10px] font-bold transition-all border border-white/5 font-sans uppercase tracking-widest">
-                            SYNC CHANGES
-                         </button>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Graph Section */}
+                      <div className="border-t border-white/5">
+                        <div 
+                          onClick={() => setGitSections(s => ({ ...s, graph: !s.graph }))}
+                          className="flex items-center gap-1 p-1 hover:bg-white/5 cursor-pointer group"
+                        >
+                          <ChevronDown size={14} className={cn("text-[#858585] transition-transform", !gitSections.graph && "-rotate-90")} />
+                          <span className="text-[10px] font-bold uppercase text-[#bbbbbb]">Graph</span>
+                          <div className="ml-auto flex items-center gap-2 opacity-0 group-hover:opacity-100 pr-2">
+                            <div className="flex items-center gap-1 text-[10px] text-vscode-blue">
+                              <GitBranch size={12} />
+                              <span>Auto</span>
+                            </div>
+                            <RotateCw size={12} className="text-[#858585]" />
+                          </div>
+                        </div>
+                        {gitSections.graph && (
+                          <div className="overflow-x-auto overflow-y-hidden custom-scrollbar">
+                            <GitGraph commits={MOCK_GIT_COMMITS} />
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
                 )}
                 {activeView === "extensions" && <ExtensionMarketplace />}
-                {activeView === "knowledge" && <DependencyExplorer />}
                 {activeView === "mcp" && (
                   <div className="flex flex-col h-full">
                     <div className="p-3 border-b border-border-main flex items-center justify-between">
@@ -1140,9 +1297,9 @@ export default function App() {
                 <Menu size={16} />
               </button>
             )}
-            {openFiles.map((file, idx) => (
+            {openFiles.map((file) => (
               <div 
-                key={`${file}-${idx}`}
+                key={`open-file-${file}`}
                 className={cn(
                   "px-3 h-full flex items-center gap-2 text-[12px] border-r border-editor-bg cursor-pointer min-w-[120px] max-w-[200px] bg-panel-bg hover:bg-[#2a2d2e] group transition-colors",
                   activeFile === file && "bg-editor-bg text-white border-t border-vscode-blue"
@@ -1287,7 +1444,7 @@ export default function App() {
                            .filter(h => h.toLowerCase().includes(terminalSearchQuery.toLowerCase()))
                            .map((h, i) => (
                              <div 
-                               key={i} 
+                               key={`${h}-${i}`} 
                                className="px-2 py-1 hover:bg-vscode-blue/20 cursor-pointer text-[10px] truncate"
                                onClick={() => {
                                  runCommand(h);
@@ -1309,7 +1466,7 @@ export default function App() {
                  {activePanelTab === "terminal" && (
                    <div className="space-y-0.5">
                      {currentTerminalTab.output.map((line, i) => (
-                       <TerminalLine key={i} content={line} />
+                       <TerminalLine key={`t-${i}`} content={line} />
                      ))}
                      <div className="flex items-center gap-2 mt-2 group/term">
                         <span className="text-agent-teal">➜</span>
@@ -1434,7 +1591,7 @@ export default function App() {
                         )}
                       </div>
                       {msg.actions.map((action, ai) => (
-                        <div key={`${action.id}-${ai}`} className="p-2 bg-[#2a2d2e] rounded border border-white/5 flex flex-col gap-2">
+                        <div key={`msg-action-${ai}-${action.id}`} className="p-2 bg-[#2a2d2e] rounded border border-white/5 flex flex-col gap-2">
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2">
                               <div className="p-1 bg-white/5 rounded text-agent-teal">
@@ -1611,7 +1768,7 @@ export default function App() {
                   <div className="flex gap-2">
                     {["INSERT", "UPDATE", "DELETE"].map(e => (
                       <button 
-                        key={e}
+                        key={`trigger-event-${e}`}
                         onClick={() => setTriggerConfig({...triggerConfig, event: e as any})}
                         className={cn(
                           "flex-1 py-1.5 rounded border text-[10px] font-bold transition-all",
@@ -1801,3 +1958,79 @@ function QuickToolButton({ label, onClick, color }: { label: string, onClick: ()
     </button>
   );
 }
+
+const MOCK_GIT_COMMITS = [
+  { id: '1', message: 'TMO.DEV.BILLABLE ORDER UPDATE 2026...', author: 'Haley Vesey', date: '5/6/2026', branch: 'origin/develop', color: '#a855f7', remote: true },
+  { id: '2', message: "Update to remove '_PROD'", author: 'Haley Vesey', date: '5/6/2026', color: '#a855f7' },
+  { id: '3', message: 'Incoming Changes', author: 'origin/develop', date: '5/6/2026', type: 'info', color: '#a855f7' },
+  { id: '4', message: 'Add Network Full id to NETWORK_MATER...', author: 'Maneesh', date: '5/6/2026', branch: 'develop', active: true, color: '#3b82f6' },
+  { id: '5', message: "Merge branch 'develop' into add-network-full", author: 'Courtney D...', date: '5/5/2026', color: '#ec4899' },
+  { id: '6', message: 'daa/Add Unknown to the dimension tables (#5932)', author: 'Maneesh', date: '5/5/2026', color: '#3b82f6' },
+  { id: '7', message: "Merge branch 'develop' into daa/unkown_dim_tables...", author: 'Maneesh', date: '5/5/2026', color: '#06b6d4' },
+  { id: '8', message: 'parmo/stratification_legacy_changes (#5917)', author: 'Maneesh', date: '5/5/2026', color: '#3b82f6' },
+  { id: '9', message: "Merge branch 'develop' into parmo/stratification_leg...", author: 'Maneesh', date: '5/4/2026', color: '#eab308' },
+  { id: '10', message: 'parmo/ China data in OTIF (#5977)', author: 'Maneesh Chandra...', date: '5/4/2026', color: '#eab308' },
+];
+
+function GitGraph({ commits }: { commits: typeof MOCK_GIT_COMMITS }) {
+  return (
+    <div className="flex flex-col font-sans">
+      {commits.map((commit, idx) => (
+        <div key={commit.id} className="flex group/commit hover:bg-white/5 cursor-pointer h-[50px] relative">
+          {/* Graph Visualization Column */}
+          <div className="w-[40px] relative flex justify-center flex-shrink-0">
+            {/* Vertical Line */}
+            <div className={`absolute top-0 bottom-0 w-[1.5px] bg-[#333]`} style={{ left: '20px' }}></div>
+            
+            {/* Connecting Lines (Simulated for aesthetics) */}
+            {idx > 0 && (
+               <div 
+                 className="absolute top-0 h-[25px] w-[1.5px]" 
+                 style={{ backgroundColor: commits[idx-1].color, left: '20px' }} 
+               />
+            )}
+            <div 
+              className="absolute top-[25px] bottom-0 w-[1.5px]" 
+              style={{ backgroundColor: commit.color, left: '20px' }} 
+            />
+
+            {/* Commit Dot */}
+            <div 
+              className={cn(
+                "absolute top-[20px] w-2.5 h-2.5 rounded-full z-10 border-2 border-activity-bg",
+                commit.active ? "scale-125 shadow-[0_0_8px_rgba(59,130,246,0.5)]" : ""
+              )}
+              style={{ backgroundColor: commit.color, left: '16px' }}
+            />
+          </div>
+
+          {/* Commit Content */}
+          <div className="flex-1 flex flex-col justify-center min-w-0 pr-2">
+            <div className="flex items-center gap-2 overflow-hidden mb-0.5">
+              <span className={cn(
+                "text-[11px] font-medium truncate",
+                commit.active ? "text-white" : "text-[#bbbbbb] group-hover/commit:text-white"
+              )}>
+                {commit.message}
+              </span>
+              {commit.branch && (
+                <div className={cn(
+                  "px-1.5 py-0.5 rounded text-[9px] font-bold flex items-center gap-1 flex-shrink-0 whitespace-nowrap",
+                  commit.remote ? "bg-purple-500/20 text-purple-400 border border-purple-500/20" : "bg-blue-500/20 text-blue-400 border border-blue-500/20"
+                )}>
+                  {commit.remote ? <ExternalLink size={8} /> : <GitBranch size={8} />}
+                  {commit.branch}
+                </div>
+              )}
+              {commit.active && <div className="p-1 bg-white/10 rounded cursor-pointer hover:bg-white/20"><Book size={10} className="text-gray-400" /></div>}
+            </div>
+            <div className="flex items-center gap-2 text-[9px] text-[#858585]">
+              <span className="truncate">{commit.author}</span>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+

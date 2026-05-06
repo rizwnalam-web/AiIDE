@@ -69,8 +69,9 @@ export const AgentModeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ filePath: action.path, content: action.content })
           });
+          if (!writeRes.ok) throw new Error(`HTTP error! status: ${writeRes.status}`);
           resultData = await writeRes.json();
-          if (!writeRes.ok || !resultData.success) {
+          if (!resultData.success) {
             throw new Error(`FileSystem Error: Failed to write to "${action.path}". ${resultData.error || 'Check permissions or path validity.'}`);
           }
           break;
@@ -82,8 +83,8 @@ export const AgentModeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ command: action.command })
           });
+          if (!cmdRes.ok) throw new Error(`HTTP error! status: ${cmdRes.status}`);
           resultData = await cmdRes.json();
-          if (!cmdRes.ok) throw new Error(`Process Error: Failed to spawn command "${action.command}"`);
           if (resultData.stderr && !resultData.stdout) {
              // Heuristic: If there's stderr but no stdout, it's likely a failure in many CLI tools
              throw new Error(`CLI Failure: ${resultData.stderr.split('\n')[0]}`);
@@ -97,8 +98,9 @@ export const AgentModeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ filePath: action.path })
           });
+          if (!readRes.ok) throw new Error(`HTTP error! status: ${readRes.status}`);
           resultData = await readRes.json();
-          if (!readRes.ok || resultData.error) {
+          if (resultData.error) {
             throw new Error(`FileSystem Error: Could not read "${action.path}". ${resultData.error || 'File might not exist.'}`);
           }
           break;
@@ -113,8 +115,8 @@ export const AgentModeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
               args: { sql: action.command, connectionId: action.path || "1" } 
             })
           });
+          if (!dbRes.ok) throw new Error(`HTTP error! status: ${dbRes.status}`);
           resultData = await dbRes.json();
-          if (!dbRes.ok) throw new Error(`Database Error: Query failed. ${resultData.error || 'Check SQL syntax or connection.'}`);
           break;
 
         default:

@@ -165,9 +165,9 @@ export const CloneRepoModal: React.FC<CloneRepoModalProps> = ({ isOpen, onClose,
 
               {step === 'provider' && (
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                  {PROVIDERS.map((p) => (
+                  {PROVIDERS.map((p, idx) => (
                     <button
-                      key={p.id}
+                      key={`${p.id}-${idx}`}
                       onClick={() => handleProviderSelect(p.id)}
                       className="flex flex-col items-center gap-4 p-6 rounded-xl border border-white/5 bg-white/[0.02] hover:bg-white/[0.05] hover:border-white/10 transition-all group"
                     >
@@ -270,9 +270,9 @@ export const CloneRepoModal: React.FC<CloneRepoModalProps> = ({ isOpen, onClose,
 
                   <div className="space-y-2 max-h-[400px] overflow-y-auto custom-scrollbar pr-2">
                     {filteredRepos.length > 0 ? (
-                      filteredRepos.map(repo => (
+                      filteredRepos.map((repo, idx) => (
                         <div 
-                          key={repo.id}
+                          key={`${repo.id}-${idx}`}
                           className="group p-4 rounded-xl border border-white/5 bg-white/[0.01] hover:bg-white/[0.04] hover:border-white/10 transition-all flex items-center justify-between"
                         >
                           <div className="flex items-center gap-4 overflow-hidden">

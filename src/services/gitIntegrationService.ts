@@ -136,6 +136,7 @@ class GitIntegrationService {
       body: JSON.stringify({ cloneUrl, targetPath })
     });
 
+    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
     return await response.json();
   }
 
@@ -150,7 +151,7 @@ class GitIntegrationService {
 
   async getSavedCredentials(): Promise<Record<GitProvider, Partial<GitAuth>>> {
     const response = await fetch('/api/git/credentials');
-    if (!response.ok) throw new Error('Failed to fetch credentials');
+    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
     return await response.json();
   }
 }
